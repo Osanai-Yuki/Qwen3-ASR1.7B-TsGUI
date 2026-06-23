@@ -118,16 +118,29 @@ Qwen3-ASR17-Ts/
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx                       # Main layout, minimalist style
-│   │   ├── index.css                     # Global styles + animations
+│   │   ├── App.tsx                       # Main layout + transcription state machine
+│   │   ├── main.tsx                      # React entrypoint
+│   │   ├── index.css                     # Tailwind v4 theme + minimalist black/white base
+│   │   ├── types.ts                      # API response interfaces
+│   │   ├── api.ts                        # fetch wrappers for all endpoints
+│   │   ├── hooks/
+│   │   │   ├── useReadiness.ts           # Poll /api/readiness until boot complete
+│   │   │   └── useJobStatus.ts           # Poll /api/status during transcription
 │   │   ├── components/
-│   │   │   ├── UploadZone.tsx            # Drag-and-drop file upload
+│   │   │   ├── BootOverlay.tsx           # Full-screen mask while models load
+│   │   │   ├── UploadZone.tsx            # Drag-and-drop upload + align toggle
+│   │   │   ├── ProgressBar.tsx           # Live job status / progress
 │   │   │   ├── TranscriptPanel.tsx       # Timestamped transcript display
 │   │   │   ├── ExportBar.tsx             # Multi-format export (SRT/VTT/ASS/TXT/JSON)
-│   │   │   └── StatsPanel.tsx            # Performance statistics display
+│   │   │   ├── StatsPanel.tsx            # Performance statistics display
+│   │   │   └── HistoryPanel.tsx          # History list: restore / delete / clear
 │   │   └── utils/
-│   │       └── subtitle.ts               # Subtitle generation (5 formats)
+│   │       ├── subtitle.ts               # Subtitle generation (5 formats)
+│   │       └── format.ts                 # Time/size/duration formatting
+│   ├── public/
+│   │   └── favicon.svg
 │   ├── vite.config.ts
+│   ├── tsconfig.json
 │   └── package.json
 ├── environment.yml                       # Conda environment definition
 ├── Qwen3-ASR-1.7B-Q8_0.gguf             # Main ASR model (Q8, ~2.2 GB)

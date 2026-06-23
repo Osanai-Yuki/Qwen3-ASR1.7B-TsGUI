@@ -1,0 +1,15 @@
+*.gguf
+bin/
+models/
+data/
+.venv/
+.env
+node_modules/
+frontend/dist/
+frontend/.vite/
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+Qwen3-ASR/
