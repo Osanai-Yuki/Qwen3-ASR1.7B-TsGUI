@@ -13,3 +13,7 @@ __pycache__/
 build/
 dist/
 Qwen3-ASR/
+
+# IDE
+.idea/
+.vscode/

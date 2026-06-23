@@ -1,0 +1,9 @@
+name: qwen3-asr
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip>=24
+  - ffmpeg
+  - pip:
+      - -r backend/requirements.txt

@@ -2,6 +2,10 @@ fastapi>=0.115.0
 uvicorn>=0.34.0
 httpx>=0.28.0
 python-multipart>=0.0.18
+numpy>=2.0.0
 
 # 测试依赖
 pytest>=9.0.0
+
+# 打包依赖（build.bat 用 PyInstaller 生成发行版）
+pyinstaller>=6.0.0
