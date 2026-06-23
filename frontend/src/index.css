@@ -1,12 +1,29 @@
 @import "tailwindcss";
 
-@theme {
-  --font-sans: "Inter", "Noto Sans JP", ui-sans-serif, system-ui, sans-serif,
-    "Apple Color Emoji", "Segoe UI Emoji";
-  --font-mono: "JetBrains Mono", "Consolas", "Courier New", monospace;
+/* ── Geist variable fonts (local, OFL-licensed) ──────────────────────── */
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
 }
 
-/* Minimalist black-and-white UI: pure black canvas, white type, sharp corners. */
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: "Geist Mono", "Consolas", "Courier New", monospace;
+}
+
+/* ── Base: pure black canvas, white type ──────────────────────────────── */
 html,
 body,
 #root {
@@ -27,7 +44,7 @@ body {
   color: #000;
 }
 
-/* Thin monochrome scrollbar to match the minimalist aesthetic. */
+/* ── Thin monochrome scrollbar ────────────────────────────────────────── */
 * {
   scrollbar-width: thin;
   scrollbar-color: #333 #000;
@@ -43,6 +60,7 @@ body {
   background: #333;
 }
 
+/* ── Animations ───────────────────────────────────────────────────────── */
 @keyframes pulse-block {
   0%,
   100% {
@@ -54,4 +72,45 @@ body {
 }
 .animate-pulse-block {
   animation: pulse-block 1.2s ease-in-out infinite;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out both;
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-slide-up {
+  animation: slide-up 0.35s ease-out both;
+}
+
+@keyframes progress-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.25);
+  }
+}
+.animate-progress-glow {
+  animation: progress-glow 2s ease-in-out infinite;
 }

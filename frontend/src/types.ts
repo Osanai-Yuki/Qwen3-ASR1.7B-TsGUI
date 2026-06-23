@@ -55,6 +55,8 @@ export interface ReadinessResponse {
   aligner_warmup: boolean;
   ready: boolean;
   error: string | null;
+  current_model: string | null;
+  switching: boolean;
 }
 
 /** GET /api/status — current job status. */
@@ -105,6 +107,45 @@ export interface HistoryRecord {
   segments: Segment[];
   stats: Stats;
   align_used: boolean;
+}
+
+/** A discovered ASR model in models/asr/. Shape from _scan_asr_models. */
+export interface ModelInfo {
+  name: string;
+  path: string;
+  size: number;
+  mmproj: string | null;
+}
+
+/** GET /api/models */
+export interface ModelsResponse {
+  models: ModelInfo[];
+  current_model: string | null;
+  tuning: {
+    ctx_size: number;
+    kv_quant: string;
+    n_gpu_layers: number;
+    threads: number | null;
+  };
+}
+
+/** POST /api/models/switch request body. */
+export interface SwitchModelRequest {
+  model: string;
+  ctx_size?: number;
+  kv_quant?: string;
+  n_gpu_layers?: number;
+  threads?: number | null;
+  batch_size?: number;
+  ubatch_size?: number;
+  flash_attn?: boolean;
+  mmproj_offload?: boolean;
+}
+
+/** POST /api/models/switch success body. */
+export interface SwitchModelResponse {
+  ok: boolean;
+  current_model: string;
 }
 
 /** Type guard: does a transcribe response represent an error? */
