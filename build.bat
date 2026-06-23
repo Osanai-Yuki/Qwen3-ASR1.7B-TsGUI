@@ -6,11 +6,34 @@ echo  Building ASR Transcription App
 echo ============================================
 echo.
 
-set PYEXE=E:\anaconda3\envs\qwen3-asr\python.exe
 set ROOT=%~dp0
 set DIST_DIR=%ROOT%dist
 set BUILD_DIR=%ROOT%build
 set OUT_DIR=%ROOT%Qwen3-ASR
+
+:: Resolve the conda environment's python. Prefer a local override, then
+:: conda run (works regardless of install path), then fall back to plain
+:: python if conda is absent.
+if defined PYTHON_EXE (
+    set "PYCMD=%PYTHON_EXE%"
+) else (
+    where conda >nul 2>&1
+    if not errorlevel 1 (
+        set "PYCMD=conda run -n qwen3-asr --no-capture-output python"
+    ) else (
+        set "PYCMD=python"
+    )
+)
+
+echo Using Python: %PYCMD%
+echo Verifying environment...
+%PYCMD% -c "import fastapi, uvicorn, numpy, PyInstaller" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Required packages missing in the target Python environment.
+    echo         Activate qwen3-asr or run: conda env create -f environment.yml
+    pause
+    exit /b 1
+)
 
 echo [1/6] Cleaning previous build...
 if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
@@ -28,7 +51,7 @@ if %errorlevel% neq 0 (
 cd /d "%ROOT%"
 
 echo [3/6] Running PyInstaller...
-"%PYEXE%" -m PyInstaller asr-app.spec ^
+call %PYCMD% -m PyInstaller asr-app.spec ^
     --distpath "%DIST_DIR%" ^
     --workpath "%BUILD_DIR%" ^
     --noconfirm ^

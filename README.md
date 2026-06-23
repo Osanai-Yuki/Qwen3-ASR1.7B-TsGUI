@@ -78,9 +78,9 @@ swapping, no impact on the ASR model.
 
 1. **Download the GGUF** from
    [cstr/qwen3-forced-aligner-0.6b-GGUF](https://huggingface.co/cstr/qwen3-forced-aligner-0.6b-GGUF)
-   and place it in the project root:
+   and place it in the models directory:
    ```
-   qwen3-forced-aligner-0.6b-q8_0.gguf   # ~940 MB
+   models/aligner/qwen3-forced-aligner-0.6b-q8_0.gguf   # ~940 MB
    ```
 
 2. **Build CrispASR** (one-time):
@@ -89,14 +89,12 @@ swapping, no impact on the ASR model.
    cd D:\Temp\CrispASR
    cmake -B build -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 18 2026" -A x64
    cmake --build build --config Release --target crispasr-lib
-   copy build\bin\Release\crispasr.dll <project>\bin\
+   copy build\bin\Release\crispasr.dll <project>\bin\crispasr\
    ```
 
-3. **Install numpy** (for PCM conversion):
-   ```powershell
-   conda activate qwen3-asr
-   pip install numpy
-   ```
+3. **numpy** (for PCM conversion) is already declared in
+   `backend/requirements.txt` and installed by `setup.bat` / `environment.yml`,
+   so no separate step is needed.
 
 The backend auto-detects both the model file and `crispasr.dll` at startup.
 If either is missing, alignment is gracefully skipped.
@@ -104,16 +102,26 @@ If either is missing, alignment is gracefully skipped.
 ## Project Structure
 
 ```
-Qwen3-ASR17-Ts/
-├── bin/                                  # llama-server binary + CUDA DLLs + CrispASR
+Qwen3-ASR17B-TsGUI/
+├── bin/                                  # llama-server binary + CUDA DLLs + CrispASR (gitignored)
 │   ├── llama-server.exe
 │   ├── ggml-cuda.dll
-│   └── crispasr.dll                     # CrispASR runtime (for ForcedAligner)
+│   └── crispasr/
+│       └── crispasr.dll                  # CrispASR runtime (for ForcedAligner)
+├── models/                               # GGUF model files (gitignored, see Release download)
+│   ├── asr/
+│   │   ├── Qwen3-ASR-1.7B-Q8_0.gguf      # Main ASR model (Q8, ~2.2 GB)
+│   │   └── mmproj-Qwen3-ASR-1.7B-Q8_0.gguf  # ASR multimodal projector (Q8, ~356 MB)
+│   └── aligner/
+│       └── qwen3-forced-aligner-0.6b-q8_0.gguf  # ForcedAligner model (Q8, ~940 MB, optional)
 ├── backend/
 │   ├── main.py                           # FastAPI app (transcribe + align + stats)
 │   ├── llamarunner.py                    # llama-server subprocess manager
 │   ├── forced_aligner.py                 # ForcedAligner via CrispASR C++ (CPU)
 │   ├── audio_chunk.py                    # ffmpeg-based audio chunking
+│   ├── resegment.py                      # Word-level → subtitle segment merging
+│   ├── text_clean.py                     # Strip ASR template artifacts
+│   ├── history.py                        # Transcription history persistence
 │   ├── test_main.py                      # Backend tests
 │   └── requirements.txt
 ├── frontend/
@@ -143,12 +151,11 @@ Qwen3-ASR17-Ts/
 │   ├── tsconfig.json
 │   └── package.json
 ├── environment.yml                       # Conda environment definition
-├── Qwen3-ASR-1.7B-Q8_0.gguf             # Main ASR model (Q8, ~2.2 GB)
-├── mmproj-Qwen3-ASR-1.7B-Q8_0.gguf      # ASR multimodal projector (Q8, ~356 MB)
-├── Qwen3-ForcedAligner-0.6B-Q8_0.gguf   # ForcedAligner model (Q8, ~600 MB, optional)
-├── mmproj-Qwen3-ForcedAligner-0.6B-Q8_0.gguf  # Aligner projector (optional)
+├── run.py                                # PyInstaller packaging entrypoint
+├── asr-app.spec                          # PyInstaller build spec
 ├── setup.bat                             # One-click environment setup
-├── start.bat                             # One-click launch script
+├── start.bat                             # One-click launch script (dev)
+├── build.bat                             # One-click build to Qwen3-ASR/ distribution
 └── README.md
 ```
 
@@ -276,25 +283,32 @@ curl -X POST http://localhost:8000/api/transcribe -F "file=@audio.wav" -F "align
 ## Testing
 
 ```powershell
-# Backend tests
+# Backend tests (skip llama-server spawn for unit testing)
 conda activate qwen3-asr
 $env:SKIP_LLAMA = "1"
 python -m pytest backend\test_main.py -v
 
-# Frontend tests
+# Frontend build check (type-check + production build)
 cd frontend
-npx vitest run
+npm run build
 ```
 
 ## Model Files
 
-| File | Size | Required | Description |
-|------|------|----------|-------------|
-| `Qwen3-ASR-1.7B-Q8_0.gguf` | ~2.2 GB | Yes | Main ASR model (Q8 quantized) |
-| `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` | ~356 MB | Yes | ASR multimodal projector (Q8) |
-| `mmproj-Qwen3-ASR-1.7B-bf16.gguf` | ~640 MB | No | ASR projector (bf16, unused) |
-| `Qwen3-ForcedAligner-0.6B-Q8_0.gguf` | ~600 MB | No | ForcedAligner model (Q8) |
-| `mmproj-Qwen3-ForcedAligner-0.6B-Q8_0.gguf` | — | No | ForcedAligner projector (if available) |
+Place GGUF files under `models/` (gitignored — download from the links below
+or from the GitHub Release). The backend auto-detects each file at startup
+and gracefully disables features that are missing.
+
+| File | Location | Size | Required | Description |
+|------|----------|------|----------|-------------|
+| `Qwen3-ASR-1.7B-Q8_0.gguf` | `models/asr/` | ~2.2 GB | Yes | Main ASR model (Q8 quantized) |
+| `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` | `models/asr/` | ~356 MB | Yes | ASR multimodal projector (Q8) |
+| `mmproj-Qwen3-ASR-1.7B-bf16.gguf` | `models/asr/` | ~640 MB | No | ASR projector (bf16, unused) |
+| `qwen3-forced-aligner-0.6b-q8_0.gguf` | `models/aligner/` | ~940 MB | No | ForcedAligner model (Q8) |
+
+> The backend also references an optional aligner projector
+> `mmproj-Qwen3-ForcedAligner-0.6B-Q8_0.gguf` (placed in `models/asr/`); if
+> absent, alignment still works using the aligner model alone.
 
 - ASR models: [ggml-org/Qwen3-ASR-1.7B-GGUF](https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF)
 - Aligner GGUF: [cstr/qwen3-forced-aligner-0.6b-GGUF](https://huggingface.co/cstr/qwen3-forced-aligner-0.6b-GGUF)
