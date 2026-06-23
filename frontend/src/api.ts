@@ -10,7 +10,10 @@ import type {
   HistoryItem,
   HistoryRecord,
   JobStatusResponse,
+  ModelsResponse,
   ReadinessResponse,
+  SwitchModelRequest,
+  SwitchModelResponse,
   TranscribeResponse,
 } from "./types";
 
@@ -76,4 +79,19 @@ export async function deleteHistory(
 export async function clearHistory(): Promise<{ cleared: number }> {
   const res = await fetch("/api/history", { method: "DELETE" });
   return (await res.json()) as { cleared: number };
+}
+
+export function fetchModels(): Promise<ModelsResponse> {
+  return getJson<ModelsResponse>("/api/models");
+}
+
+export async function switchModel(
+  req: SwitchModelRequest,
+): Promise<SwitchModelResponse | ApiError> {
+  const res = await fetch("/api/models/switch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  return (await res.json()) as SwitchModelResponse | ApiError;
 }

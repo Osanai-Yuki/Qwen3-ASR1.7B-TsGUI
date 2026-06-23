@@ -1,3 +1,4 @@
+import asyncio
 import io
 import os
 import shutil
@@ -12,7 +13,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -35,17 +36,65 @@ def _resolve_app_root() -> Path:
 
 PROJECT_ROOT = _resolve_app_root()
 
-CTX_SIZE = int(os.environ.get("CTX_SIZE", "32768"))
-CHUNK_SECONDS = float(os.environ.get("CHUNK_SECONDS", "25"))
-KV_QUANT = os.environ.get("KV_QUANT", "q8_0")
-
 MODELS_DIR = PROJECT_ROOT / "models"
+ASR_MODELS_DIR = MODELS_DIR / "asr"
 DATA_DIR = PROJECT_ROOT / "data"
 HISTORY_DIR = DATA_DIR / "history"
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
-ASR_MODEL = str(MODELS_DIR / "asr" / "Qwen3-ASR-1.7B-Q8_0.gguf")
-ASR_MMPROJ = str(MODELS_DIR / "asr" / "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf")
+
+def _detect_vram_gb() -> float | None:
+    """Best-effort GPU VRAM detection via nvidia-smi (None if unavailable)."""
+    try:
+        import subprocess as _sp
+        r = _sp.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return float(r.stdout.strip().splitlines()[0]) / 1024.0
+    except Exception:
+        pass
+    return None
+
+
+def _default_tuning() -> dict:
+    """Pick ctx/kv/ngl defaults adaptive to available VRAM.
+
+    Tunable via env (VRAM_GB, CTX_SIZE, KV_QUANT, NGL) which override.
+    """
+    vram = os.environ.get("VRAM_GB")
+    vram_gb = float(vram) if vram else (_detect_vram_gb() or 8.0)
+
+    if vram_gb <= 4.5:
+        presets = {"ctx_size": 16384, "kv_quant": "q4_0", "n_gpu_layers": 99}
+    elif vram_gb <= 8.5:
+        presets = {"ctx_size": 32768, "kv_quant": "q8_0", "n_gpu_layers": 99}
+    else:
+        presets = {"ctx_size": 32768, "kv_quant": "f16", "n_gpu_layers": 99}
+
+    ctx = int(os.environ.get("CTX_SIZE", str(presets["ctx_size"])))
+    kv = os.environ.get("KV_QUANT", presets["kv_quant"])
+    ngl = int(os.environ.get("NGL", str(presets["n_gpu_layers"])))
+    threads = os.environ.get("THREADS")
+    threads = int(threads) if threads else None
+    return {
+        "ctx_size": ctx,
+        "kv_quant": kv,
+        "n_gpu_layers": ngl,
+        "threads": threads,
+    }
+
+
+TUNING = _default_tuning()
+CTX_SIZE = TUNING["ctx_size"]
+KV_QUANT = TUNING["kv_quant"]
+DEFAULT_NGL = TUNING["n_gpu_layers"]
+DEFAULT_THREADS = TUNING["threads"]
+CHUNK_SECONDS = float(os.environ.get("CHUNK_SECONDS", "25"))
+
+ASR_MODEL = str(ASR_MODELS_DIR / "Qwen3-ASR-1.7B-Q8_0.gguf")
+ASR_MMPROJ = str(ASR_MODELS_DIR / "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf")
 
 runner = LlamaRunner(
     bin_path=str(PROJECT_ROOT / "bin" / "llama-server.exe"),
@@ -97,6 +146,8 @@ boot_state = {
     "aligner_warmup": False,
     "ready": False,
     "error": None,
+    "current_model": None,
+    "switching": False,
 }
 boot_lock = threading.Lock()
 
@@ -124,15 +175,62 @@ def _make_silent_wav(seconds: float = 0.3, sr: int = 16000) -> bytes:
     return buf.getvalue()
 
 
-def _start_asr():
+def _scan_asr_models() -> list[dict]:
+    """Scan models/asr/ for main ASR models (non-mmproj .gguf) and pair each
+    with its best matching mmproj projector (prefer Q8_0, fall back to bf16)."""
+    if not ASR_MODELS_DIR.exists():
+        return []
+    all_gguf = sorted(ASR_MODELS_DIR.glob("*.gguf"))
+    mmproj_files = [p for p in all_gguf if p.name.lower().startswith("mmproj")]
+    main_files = [p for p in all_gguf if not p.name.lower().startswith("mmproj")]
+
+    models: list[dict] = []
+    for mp in main_files:
+        stem = mp.name
+        # candidates: same base name with mmproj- prefix, prefer Q8_0 over bf16
+        base = stem  # e.g. Qwen3-ASR-1.7B-Q8_0.gguf
+        pairs = [p for p in mmproj_files if base[:-5] in p.name]
+        pairs.sort(key=lambda p: (0 if "q8_0" in p.name.lower() else 1, p.name))
+        mmproj = str(pairs[0]) if pairs else None
+        models.append({
+            "name": mp.stem,
+            "path": str(mp),
+            "size": mp.stat().st_size,
+            "mmproj": mmproj,
+        })
+    return models
+
+
+def _start_asr(
+    model_path: str = ASR_MODEL,
+    mmproj_path: str | None = ASR_MMPROJ,
+    ctx_size: int = CTX_SIZE,
+    kv_quant: str = KV_QUANT,
+    n_gpu_layers: int = DEFAULT_NGL,
+    threads: int | None = DEFAULT_THREADS,
+    batch_size: int | None = None,
+    ubatch_size: int | None = None,
+    flash_attn: bool = True,
+    mmproj_offload: bool = False,
+    model_name: str | None = None,
+    timeout: float = 240.0,
+) -> None:
+    """Start/swap the ASR model. Shared by boot sequence and /api/models/switch."""
     runner.start(
-        model_path=ASR_MODEL,
-        mmproj_path=ASR_MMPROJ,
-        ctx_size=CTX_SIZE,
-        kv_quant=KV_QUANT,
-        n_gpu_layers=99,
-        model_name="Qwen3-ASR-1.7B-Q8_0",
+        model_path=model_path,
+        mmproj_path=mmproj_path,
+        ctx_size=ctx_size,
+        kv_quant=kv_quant,
+        n_gpu_layers=n_gpu_layers,
+        threads=threads,
+        batch_size=batch_size,
+        ubatch_size=ubatch_size,
+        flash_attn=flash_attn,
+        mmproj_offload=mmproj_offload,
+        model_name=model_name,
+        timeout=timeout,
     )
+    _set_boot(current_model=runner.current_model)
 
 
 def _warmup_asr():
@@ -179,7 +277,8 @@ def _boot_sequence():
         logger.warning("Boot cleanup failed: %s", e)
 
     if skip_llama:
-        _set_boot(phase="asr_skipped", asr_loaded=True, asr_warmup=True)
+        _set_boot(phase="asr_skipped", asr_loaded=True, asr_warmup=True,
+                  current_model="skipped")
     else:
         _set_boot(phase="asr_loading")
         try:
@@ -248,6 +347,64 @@ async def status():
         return dict(job_state)
 
 
+@app.get("/api/models")
+async def models_list():
+    """List available ASR models and the currently loaded one."""
+    return {
+        "models": _scan_asr_models(),
+        "current_model": runner.current_model,
+        "tuning": {
+            "ctx_size": CTX_SIZE,
+            "kv_quant": KV_QUANT,
+            "n_gpu_layers": DEFAULT_NGL,
+            "threads": DEFAULT_THREADS,
+        },
+    }
+
+
+@app.post("/api/models/switch")
+async def models_switch(req: dict = Body(default={})):
+    """Hot-swap the running ASR model. Runs in a worker thread so the long
+    blocking load does not stall the event loop."""
+    req = req or {}
+    model_name = req.get("model")
+    if not model_name:
+        return {"error": "bad_request", "detail": "model is required"}
+
+    models = _scan_asr_models()
+    match = next((m for m in models if m["name"] == model_name), None)
+    if not match:
+        return {"error": "not_found", "detail": f"unknown model {model_name}"}
+
+    # Refuse if a transcription is in flight.
+    with job_lock:
+        busy = job_state["status"] in ("preparing", "transcribing", "aligning")
+    if busy:
+        return {"error": "busy", "detail": "a transcription is in progress"}
+
+    _set_boot(switching=True, phase="asr_switching", ready=False, error=None)
+    try:
+        await asyncio.to_thread(
+            _start_asr,
+            model_path=match["path"],
+            mmproj_path=match["mmproj"],
+            ctx_size=int(req.get("ctx_size", CTX_SIZE)),
+            kv_quant=req.get("kv_quant", KV_QUANT),
+            n_gpu_layers=int(req.get("n_gpu_layers", DEFAULT_NGL)),
+            threads=req.get("threads", DEFAULT_THREADS),
+            batch_size=req.get("batch_size"),
+            ubatch_size=req.get("ubatch_size"),
+            flash_attn=bool(req.get("flash_attn", True)),
+            mmproj_offload=bool(req.get("mmproj_offload", False)),
+            model_name=match["name"],
+        )
+        _set_boot(switching=False, phase="ready", ready=True, asr_loaded=True)
+        return {"ok": True, "current_model": runner.current_model}
+    except Exception as e:
+        _set_boot(switching=False, phase="error", error=f"Model switch failed: {e}")
+        return {"error": "switch_failed", "detail": str(e)}
+
+
 async def _transcribe_chunk(client: httpx.AsyncClient, chunk_path: Path) -> dict:
     with chunk_path.open("rb") as fh:
         audio_bytes = fh.read()
@@ -307,7 +464,7 @@ async def transcribe(
         "segment_count": 0,
         "word_count": 0,
         "aligner_used": False,
-        "model": "Qwen3-ASR-1.7B-Q8_0",
+        "model": runner.current_model or "Qwen3-ASR-1.7B-Q8_0",
         "aligner_model": None,
     }
 

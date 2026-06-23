@@ -47,20 +47,20 @@ export function StatsPanel({ stats }: Props) {
   ];
 
   return (
-    <div className="border border-neutral-800 p-6">
+    <div className="border border-neutral-800 p-6 animate-fade-in">
       <h2 className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-4">
         Statistics
       </h2>
-      <dl className="space-y-2">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
         {rows.map((row) => (
           <div
             key={row.label}
-            className="flex items-baseline justify-between gap-4 font-mono text-xs"
+            className="flex flex-col font-mono text-xs"
           >
-            <dt className="text-neutral-500 uppercase tracking-wider">
+            <dt className="text-neutral-600 uppercase tracking-wider text-[10px]">
               {row.label}
             </dt>
-            <dd className="text-neutral-200 text-right break-all">{row.value}</dd>
+            <dd className="text-neutral-100 break-all">{row.value}</dd>
           </div>
         ))}
       </dl>

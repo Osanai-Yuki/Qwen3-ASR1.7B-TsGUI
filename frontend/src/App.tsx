@@ -9,17 +9,20 @@ import {
 } from "./api";
 import { useJobStatus } from "./hooks/useJobStatus";
 import { useReadiness } from "./hooks/useReadiness";
-import { isApiError, type HistoryItem, type Stats } from "./types";
+import { isApiError, type HistoryItem, type Segment, type Stats } from "./types";
+import { AudioPlayer } from "./components/AudioPlayer";
 import { BootOverlay } from "./components/BootOverlay";
 import { ExportBar } from "./components/ExportBar";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { ModelPanel } from "./components/ModelPanel";
 import { ProgressBar } from "./components/ProgressBar";
 import { StatsPanel } from "./components/StatsPanel";
 import { TranscriptPanel } from "./components/TranscriptPanel";
 import { UploadZone } from "./components/UploadZone";
 
 export default function App() {
-  const { state: readiness, ready, failed } = useReadiness();
+  const { state: readiness, ready, switching, failed, restart: restartReadiness } =
+    useReadiness();
   const [alignerAvailable, setAlignerAvailable] = useState(false);
 
   // Working state
@@ -28,30 +31,42 @@ export default function App() {
 
   // Result state
   const [text, setText] = useState("");
-  const [segments, setSegments] = useState<
-    { start: number; end: number; text: string }[]
-  >([]);
+  const [segments, setSegments] = useState<Segment[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [baseName, setBaseName] = useState("transcript");
   const [error, setError] = useState<string | null>(null);
+
+  // Audio playback state (Object URL of the uploaded file)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState<number | null>(null);
+  const [seekTo, setSeekTo] = useState<number | null>(null);
 
   // History state
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
 
   // Once ready, fetch health (for aligner availability) and history list.
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || switching) return;
     fetchHealth()
       .then((h) => setAlignerAvailable(h.aligner_available))
       .catch(() => {});
     refreshHistory();
-  }, [ready]);
+  }, [ready, switching]);
 
   const refreshHistory = useCallback(() => {
     fetchHistory()
       .then((r) => setHistoryItems(r.items))
       .catch(() => {});
+  }, []);
+
+  // Cleanup Object URL on unmount or replacement
+  const clearAudioUrl = useCallback(() => {
+    setAudioUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setCurrentTime(null);
   }, []);
 
   const handleTranscribe = useCallback(
@@ -62,7 +77,13 @@ export default function App() {
       setSegments([]);
       setStats(null);
       setHistoryId(null);
+      setCurrentTime(null);
       setBaseName((file.name || "transcript").replace(/\.[^.]+$/, ""));
+
+      // Create a local Object URL for audio playback (backend deletes the file)
+      clearAudioUrl();
+      const url = URL.createObjectURL(file);
+      setAudioUrl(url);
 
       try {
         const res = await transcribe(file, align);
@@ -81,7 +102,7 @@ export default function App() {
         setWorking(false);
       }
     },
-    [refreshHistory],
+    [refreshHistory, clearAudioUrl],
   );
 
   const handleRestore = useCallback(
@@ -98,11 +119,13 @@ export default function App() {
         setHistoryId(rec.id);
         setError(null);
         setBaseName((rec.filename || "transcript").replace(/\.[^.]+$/, ""));
+        // History records have no audio (backend never persists it)
+        clearAudioUrl();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [],
+    [clearAudioUrl],
   );
 
   const handleDelete = useCallback(
@@ -113,10 +136,11 @@ export default function App() {
         setSegments([]);
         setStats(null);
         setHistoryId(null);
+        clearAudioUrl();
       }
       refreshHistory();
     },
-    [historyId, refreshHistory],
+    [historyId, refreshHistory, clearAudioUrl],
   );
 
   const handleClear = useCallback(async () => {
@@ -125,10 +149,25 @@ export default function App() {
     setSegments([]);
     setStats(null);
     setHistoryId(null);
+    clearAudioUrl();
     refreshHistory();
-  }, [refreshHistory]);
+  }, [refreshHistory, clearAudioUrl]);
 
-  if (!ready) {
+  const handleSeek = useCallback((time: number) => {
+    setSeekTo(time);
+  }, []);
+
+  // Model switch handlers
+  const handleSwitchStart = useCallback(() => {
+    restartReadiness();
+  }, [restartReadiness]);
+
+  const handleSwitchDone = useCallback(() => {
+    // readiness polling will naturally pick up the new state
+  }, []);
+
+  // Show boot overlay during initial boot or model switching
+  if (!ready || switching) {
     return <BootOverlay state={readiness} failed={failed} />;
   }
 
@@ -142,22 +181,29 @@ export default function App() {
             ASR TRANSCRIPTION
           </h1>
           <span className="font-mono text-xs text-neutral-600">
-            Qwen3-ASR-1.7B · CUDA
+            Qwen3-ASR · CUDA
           </span>
         </div>
       </header>
 
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-px bg-neutral-800">
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-px bg-neutral-800">
         {/* Left column: controls */}
-        <div className="bg-black flex flex-col gap-px">
+        <div className="bg-black flex flex-col gap-px overflow-y-auto">
           <UploadZone
             onTranscribe={handleTranscribe}
             disabled={working}
             alignerAvailable={alignerAvailable}
           />
+          {audioUrl && (
+            <AudioPlayer
+              audioUrl={audioUrl}
+              onTimeUpdate={setCurrentTime}
+              seekTo={seekTo}
+            />
+          )}
           {working && <ProgressBar status={jobStatus} />}
           {error && (
-            <div className="border border-red-900 bg-black p-6">
+            <div className="border border-red-900 bg-black p-6 animate-fade-in">
               <p className="font-mono text-xs uppercase tracking-widest text-red-500 mb-2">
                 Error
               </p>
@@ -166,6 +212,11 @@ export default function App() {
               </p>
             </div>
           )}
+          <ModelPanel
+            switching={switching}
+            onSwitchStart={handleSwitchStart}
+            onSwitchDone={handleSwitchDone}
+          />
           <StatsPanel stats={stats} />
           <ExportBar
             text={text}
@@ -190,6 +241,8 @@ export default function App() {
               segments={segments}
               text={text}
               alignerUsed={stats?.aligner_used ?? false}
+              currentTime={currentTime}
+              onSeek={handleSeek}
             />
           </div>
         </div>
