@@ -6,6 +6,8 @@
 import type {
   AlignResponse,
   ApiError,
+  AudioCacheClearResult,
+  AudioCacheInfo,
   HealthResponse,
   HistoryItem,
   HistoryRecord,
@@ -79,6 +81,17 @@ export async function deleteHistory(
 export async function clearHistory(): Promise<{ cleared: number }> {
   const res = await fetch("/api/history", { method: "DELETE" });
   return (await res.json()) as { cleared: number };
+}
+
+/** GET /api/audio-cache — list cached converted-audio MP3s. */
+export function fetchAudioCache(): Promise<AudioCacheInfo> {
+  return getJson<AudioCacheInfo>("/api/audio-cache");
+}
+
+/** DELETE /api/audio-cache — remove all cached converted-audio MP3s. */
+export async function clearAudioCache(): Promise<AudioCacheClearResult> {
+  const res = await fetch("/api/audio-cache", { method: "DELETE" });
+  return (await res.json()) as AudioCacheClearResult;
 }
 
 export function fetchModels(): Promise<ModelsResponse> {

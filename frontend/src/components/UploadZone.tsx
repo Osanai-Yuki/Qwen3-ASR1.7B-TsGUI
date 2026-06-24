@@ -1,6 +1,19 @@
 import { useRef, useState } from "react";
 
-const ACCEPT = ".wav,.mp3,.flac,.ogg,.m4a,audio/*";
+const ACCEPT =
+  ".wav,.mp3,.flac,.ogg,.m4a,audio/*," +
+  ".mp4,.mkv,.mov,.avi,.webm,.flv,.m4v,.wmv,.mpg,.mpeg,.ts,.3gp,video/*";
+
+const VIDEO_EXTS = new Set([
+  ".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv",
+  ".m4v", ".wmv", ".mpg", ".mpeg", ".ts", ".3gp",
+]);
+
+function isVideoFile(file: File): boolean {
+  if (file.type.startsWith("video/")) return true;
+  const dot = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+  return dot !== "" && VIDEO_EXTS.has(dot);
+}
 
 interface Props {
   onTranscribe: (file: File, align: boolean) => void;
@@ -8,7 +21,7 @@ interface Props {
   alignerAvailable: boolean;
 }
 
-/** Drag-and-drop / click-to-select audio upload with an optional alignment toggle. */
+/** Drag-and-drop / click-to-select audio/video upload with an optional alignment toggle. */
 export function UploadZone({ onTranscribe, disabled, alignerAvailable }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [align, setAlign] = useState(false);
@@ -59,14 +72,19 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable }: Props) 
             <p className="font-mono text-xs text-neutral-500 mt-1">
               {(file.size / 1048576).toFixed(1)} MB
             </p>
+            {isVideoFile(file) && (
+              <p className="font-mono text-[10px] uppercase tracking-widest text-amber-600 mt-2">
+                Video → MP3 (auto bitrate)
+              </p>
+            )}
           </div>
         ) : (
           <div className="text-center">
             <p className="font-mono text-sm text-neutral-300">
-              Drag &amp; drop audio here
+              Drag &amp; drop audio or video here
             </p>
             <p className="font-mono text-xs text-neutral-600 mt-1">
-              WAV · MP3 · FLAC · OGG · M4A
+              WAV · MP3 · FLAC · OGG · M4A · MP4 · MKV · MOV ...
             </p>
           </div>
         )}
