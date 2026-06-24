@@ -35,6 +35,9 @@ export interface Stats {
   aligner_used: boolean;
   model: string;
   aligner_model: string | null;
+  source_was_video?: boolean;
+  audio_cache_name: string | null;
+  mp3_bitrate?: number | null;
 }
 
 /** GET /api/health */
@@ -96,6 +99,7 @@ export interface HistoryItem {
   char_count: number;
   align_used: boolean;
   segment_count: number;
+  audio_cache_name: string | null;
 }
 
 /** Full history record (GET /api/history/{hid}). Shape from history.py:save. */
@@ -107,6 +111,7 @@ export interface HistoryRecord {
   segments: Segment[];
   stats: Stats;
   align_used: boolean;
+  audio_cache_name: string | null;
 }
 
 /** A discovered ASR model in models/asr/. Shape from _scan_asr_models. */
@@ -146,6 +151,26 @@ export interface SwitchModelRequest {
 export interface SwitchModelResponse {
   ok: boolean;
   current_model: string;
+}
+
+/** A cached converted-audio MP3 entry (GET /api/audio-cache). */
+export interface AudioCacheItem {
+  name: string;
+  size: number;
+  mtime: number;
+}
+
+/** GET /api/audio-cache */
+export interface AudioCacheInfo {
+  count: number;
+  size_bytes: number;
+  items: AudioCacheItem[];
+}
+
+/** DELETE /api/audio-cache */
+export interface AudioCacheClearResult {
+  cleared: number;
+  bytes_freed: number;
 }
 
 /** Type guard: does a transcribe response represent an error? */

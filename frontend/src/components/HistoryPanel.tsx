@@ -1,23 +1,35 @@
-import type { HistoryItem } from "../types";
+import type { AudioCacheInfo, HistoryItem } from "../types";
 import { formatDateTime, formatDuration } from "../utils/format";
 
 interface Props {
   items: HistoryItem[];
   activeId: string | null;
+  audioCache: AudioCacheInfo | null;
   /** Request full record by id; App performs the fetch and fills the panels. */
   onRestore: (id: string) => void;
   onDelete: (id: string) => void;
   onClear: () => void;
+  onClearAudioCache: () => void;
 }
 
-/** History list with restore-on-click, per-item delete, and clear-all. */
+function formatMB(bytes: number): string {
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+/** History list with restore-on-click, per-item delete, clear-all, and
+ * converted-audio cache management. */
 export function HistoryPanel({
   items,
   activeId,
+  audioCache,
   onRestore,
   onDelete,
   onClear,
+  onClearAudioCache,
 }: Props) {
+  const cacheCount = audioCache?.count ?? 0;
+  const cacheBytes = audioCache?.size_bytes ?? 0;
+
   return (
     <div className="border border-neutral-800 p-6">
       <div className="flex items-center justify-between mb-4">
@@ -37,6 +49,21 @@ export function HistoryPanel({
         )}
       </div>
 
+      {cacheCount > 0 && (
+        <div className="flex items-center justify-between mb-4 px-3 py-2 border border-neutral-800 bg-neutral-950">
+          <span className="font-mono text-[10px] text-neutral-500">
+            Cached audio: {cacheCount} file{cacheCount > 1 ? "s" : ""} ·{" "}
+            {formatMB(cacheBytes)}
+          </span>
+          <button
+            onClick={onClearAudioCache}
+            className="font-mono text-[10px] uppercase tracking-widest text-neutral-500 hover:text-red-500 transition-colors"
+          >
+            Clear cache
+          </button>
+        </div>
+      )}
+
       {items.length === 0 ? (
         <p className="font-mono text-xs text-neutral-600">No history yet.</p>
       ) : (
@@ -52,8 +79,16 @@ export function HistoryPanel({
               }`}
             >
               <div className="flex-1 min-w-0">
-                <p className="font-mono text-xs font-bold text-neutral-200 truncate">
-                  {item.filename ?? "unknown"}
+                <p className="font-mono text-xs font-bold text-neutral-200 truncate flex items-center gap-1">
+                  <span className="truncate">{item.filename ?? "unknown"}</span>
+                  {item.audio_cache_name && (
+                    <span
+                      className="text-amber-600 shrink-0"
+                      title="converted MP3 cached"
+                    >
+                      ♪
+                    </span>
+                  )}
                 </p>
                 <p className="font-mono text-[10px] text-neutral-600">
                   {formatDateTime(item.created_at)} ·{" "}

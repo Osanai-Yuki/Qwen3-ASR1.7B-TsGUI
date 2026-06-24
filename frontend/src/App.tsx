@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  clearAudioCache,
   clearHistory,
   deleteHistory,
+  fetchAudioCache,
   fetchHealth,
   fetchHistory,
   fetchHistoryRecord,
@@ -9,7 +11,13 @@ import {
 } from "./api";
 import { useJobStatus } from "./hooks/useJobStatus";
 import { useReadiness } from "./hooks/useReadiness";
-import { isApiError, type HistoryItem, type Segment, type Stats } from "./types";
+import {
+  isApiError,
+  type AudioCacheInfo,
+  type HistoryItem,
+  type Segment,
+  type Stats,
+} from "./types";
 import { AudioPlayer } from "./components/AudioPlayer";
 import { BootOverlay } from "./components/BootOverlay";
 import { ExportBar } from "./components/ExportBar";
@@ -45,6 +53,9 @@ export default function App() {
   // History state
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
 
+  // Converted-audio cache state (MP3s extracted from video sources)
+  const [audioCache, setAudioCache] = useState<AudioCacheInfo | null>(null);
+
   // Once ready, fetch health (for aligner availability) and history list.
   useEffect(() => {
     if (!ready || switching) return;
@@ -52,6 +63,7 @@ export default function App() {
       .then((h) => setAlignerAvailable(h.aligner_available))
       .catch(() => {});
     refreshHistory();
+    refreshAudioCache();
   }, [ready, switching]);
 
   const refreshHistory = useCallback(() => {
@@ -60,11 +72,27 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Cleanup Object URL on unmount or replacement
+  const refreshAudioCache = useCallback(() => {
+    fetchAudioCache()
+      .then((c) => setAudioCache(c))
+      .catch(() => {});
+  }, []);
+
+  // Cleanup the current audio URL on unmount or replacement. Only Object URLs
+  // (blob:) created from uploaded files need revoking; backend cache URLs do not.
   const clearAudioUrl = useCallback(() => {
     setAudioUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
+      if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
       return null;
+    });
+    setCurrentTime(null);
+  }, []);
+
+  /** Set the audio source to a backend cached-MP3 URL (no revocation needed). */
+  const setCacheAudioUrl = useCallback((cacheName: string) => {
+    setAudioUrl((prev) => {
+      if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
+      return `/api/audio-cache/${encodeURIComponent(cacheName)}`;
     });
     setCurrentTime(null);
   }, []);
@@ -80,7 +108,10 @@ export default function App() {
       setCurrentTime(null);
       setBaseName((file.name || "transcript").replace(/\.[^.]+$/, ""));
 
-      // Create a local Object URL for audio playback (backend deletes the file)
+      // Create a local Object URL for immediate audio playback during work.
+      // For video sources the backend caches a converted MP3; once the
+      // response arrives we switch playback to that cached file (so it
+      // reflects the actual converted audio and survives history restore).
       clearAudioUrl();
       const url = URL.createObjectURL(file);
       setAudioUrl(url);
@@ -94,7 +125,10 @@ export default function App() {
           setSegments(res.segments);
           setStats(res.stats);
           setHistoryId(res.history_id);
+          const cacheName = res.stats?.audio_cache_name ?? null;
+          if (cacheName) setCacheAudioUrl(cacheName);
           refreshHistory();
+          refreshAudioCache();
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -102,7 +136,7 @@ export default function App() {
         setWorking(false);
       }
     },
-    [refreshHistory, clearAudioUrl],
+    [refreshHistory, refreshAudioCache, clearAudioUrl, setCacheAudioUrl],
   );
 
   const handleRestore = useCallback(
@@ -119,13 +153,14 @@ export default function App() {
         setHistoryId(rec.id);
         setError(null);
         setBaseName((rec.filename || "transcript").replace(/\.[^.]+$/, ""));
-        // History records have no audio (backend never persists it)
-        clearAudioUrl();
+        // History records can replay audio if a converted MP3 was cached.
+        if (rec.audio_cache_name) setCacheAudioUrl(rec.audio_cache_name);
+        else clearAudioUrl();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [clearAudioUrl],
+    [clearAudioUrl, setCacheAudioUrl],
   );
 
   const handleDelete = useCallback(
@@ -152,6 +187,13 @@ export default function App() {
     clearAudioUrl();
     refreshHistory();
   }, [refreshHistory, clearAudioUrl]);
+
+  const handleClearAudioCache = useCallback(async () => {
+    await clearAudioCache();
+    // If the currently playing track was a cached MP3, drop it.
+    clearAudioUrl();
+    refreshAudioCache();
+  }, [clearAudioUrl, refreshAudioCache]);
 
   const handleSeek = useCallback((time: number) => {
     setSeekTo(time);
@@ -228,9 +270,11 @@ export default function App() {
           <HistoryPanel
             items={historyItems}
             activeId={historyId}
+            audioCache={audioCache}
             onRestore={handleRestore}
             onDelete={handleDelete}
             onClear={handleClear}
+            onClearAudioCache={handleClearAudioCache}
           />
         </div>
 

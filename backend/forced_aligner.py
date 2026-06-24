@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import wave
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,17 @@ ALIGNER_MODEL_NAME = "Qwen3-ForcedAligner-0.6B-Q8_0"
 _lib_path: str | None = None
 _lib_handle: ctypes.CDLL | None = None
 _lib_signatures_set: bool = False
+
+# CrispASR's ``align_words_abi`` reloads the model on every call (~2s for the
+# 0.6B model) and there is no "load once, align many" C entry point. To offset
+# that, alignment across chunks runs in parallel via a thread pool — ctypes
+# releases the GIL during the C call, so threads run truly in parallel.
+#
+# Safety bounds (measured on a 16-core host): each concurrent call allocates a
+# ~262 MB model buffer, so >4 workers risk an out-of-memory access violation.
+# Keep workers×threads comfortably below core count.
+ALIGN_N_THREADS = int(os.environ.get("ALIGN_N_THREADS", "4"))
+ALIGN_MAX_WORKERS = max(1, min(int(os.environ.get("ALIGN_MAX_WORKERS", "3")), 4))
 
 
 def _resolve_app_root() -> Path:
@@ -214,6 +226,7 @@ class ForcedAligner:
         wav_path: Path,
         text: str,
         chunk_start: float,
+        n_threads: int = ALIGN_N_THREADS,
     ) -> list[dict]:
         """Align text to audio for one WAV chunk.
 
@@ -238,7 +251,7 @@ class ForcedAligner:
                 text,
                 pcm,
                 t_offset=chunk_start,
-                n_threads=4,
+                n_threads=n_threads,
             )
         except Exception as e:
             logger.error("CrispASR align_words failed: %s", e)
@@ -249,3 +262,54 @@ class ForcedAligner:
             for w in words
             if w.text
         ]
+
+    def align_many(
+        self,
+        items: list[tuple[Path, str, float]],
+        max_workers: int | None = None,
+        n_threads: int = ALIGN_N_THREADS,
+        progress_cb=None,
+    ) -> list[list[dict]]:
+        """Align many chunks in parallel, preserving input order.
+
+        ``items`` is a list of ``(wav_path, text, chunk_start)``. Returns a
+        list of word-segment lists in the same order as ``items``. A failing
+        chunk yields ``[]`` (logged) rather than aborting the whole batch.
+        If given, ``progress_cb(done, total)`` is invoked as each chunk
+        completes (from a worker thread — keep it cheap/non-blocking).
+
+        CrispASR reloads the model per call, so parallelizing across chunks is
+        the main lever for alignment throughput. Workers are capped at 4:
+        each concurrent call holds a ~262 MB model buffer and >4 risks OOM.
+        """
+        if not items:
+            return []
+        total = len(items)
+        workers = max(1, min(max_workers or ALIGN_MAX_WORKERS, 4))
+        if workers == 1 or total == 1:
+            out: list[list[dict]] = []
+            for i, (p, t, s) in enumerate(items, 1):
+                out.append(self.align_chunk(p, t, s, n_threads=n_threads))
+                if progress_cb:
+                    progress_cb(i, total)
+            return out
+
+        results: list[list[dict]] = [[] for _ in items]
+        done = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_to_idx = {
+                pool.submit(self.align_chunk, p, t, s, n_threads): idx
+                for idx, (p, t, s) in enumerate(items)
+            }
+            for fut in as_completed(future_to_idx):
+                idx = future_to_idx[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception as e:
+                    logger.warning("Alignment failed for chunk %d: %s", idx, e)
+                    results[idx] = []
+                finally:
+                    done += 1
+                    if progress_cb:
+                        progress_cb(done, total)
+        return results

@@ -14,12 +14,21 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, Body
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from .llamarunner import LlamaRunner
 from .forced_aligner import ForcedAligner
-from .audio_chunk import split_audio, probe_duration, FFmpegMissingError
+from .audio_chunk import (
+    split_audio,
+    probe_duration,
+    probe_audio_bitrate,
+    is_video_file,
+    extract_audio_to_mp3,
+    safe_cache_stem,
+    FFmpegMissingError,
+)
 from .resegment import resegment_words
 from .text_clean import clean_asr_text, clean_segments
 from .history import HistoryStore
@@ -41,6 +50,11 @@ ASR_MODELS_DIR = MODELS_DIR / "asr"
 DATA_DIR = PROJECT_ROOT / "data"
 HISTORY_DIR = DATA_DIR / "history"
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+# Persistently cached MP3s extracted from uploaded video sources, kept for
+# reuse across runs until the user clears them via /api/audio-cache.
+AUDIO_CACHE_DIR = DATA_DIR / "audio_cache"
+AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+MP3_DEFAULT_BITRATE = 256_000
 
 
 def _detect_vram_gb() -> float | None:
@@ -102,9 +116,10 @@ runner = LlamaRunner(
     port=8080,
 )
 
+# ForcedAligner runs on CPU via CrispASR (no mmproj — that field is unused by
+# the C align API, and the referenced forced-aligner mmproj does not ship).
 aligner = ForcedAligner(
     model_path=str(MODELS_DIR / "aligner" / "qwen3-forced-aligner-0.6b-q8_0.gguf"),
-    mmproj_path=str(MODELS_DIR / "asr" / "mmproj-Qwen3-ForcedAligner-0.6B-Q8_0.gguf"),
 )
 
 STATIC_DIR = PROJECT_ROOT / "frontend" / "dist"
@@ -296,6 +311,11 @@ def _boot_sequence():
 
     if aligner.available:
         _set_boot(phase="aligner_loading", aligner_loaded=True)
+        from .forced_aligner import ALIGN_MAX_WORKERS, ALIGN_N_THREADS
+        logger.info(
+            "Aligner config: workers=%d, threads/call=%d (parallel chunk alignment)",
+            ALIGN_MAX_WORKERS, ALIGN_N_THREADS,
+        )
         try:
             ok = _warmup_aligner()
             _set_boot(aligner_warmup=ok, phase="ready", ready=True)
@@ -466,9 +486,39 @@ async def transcribe(
         "aligner_used": False,
         "model": runner.current_model or "Qwen3-ASR-1.7B-Q8_0",
         "aligner_model": None,
+        "source_was_video": False,
+        "audio_cache_name": None,
+        "mp3_bitrate": None,
     }
 
     try:
+        # ── Video handling: extract (or reuse) a cached MP3 ───────────
+        try:
+            if is_video_file(src_path):
+                stats["source_was_video"] = True
+                cache_name = f"{safe_cache_stem(file.filename or 'input')}__{len(audio_bytes)}.mp3"
+                mp3_path = AUDIO_CACHE_DIR / cache_name
+                if mp3_path.exists() and mp3_path.stat().st_size > 0:
+                    logger.info("Reusing cached mp3 for %s: %s", file.filename, cache_name)
+                else:
+                    set_job("preparing", 7, "Extracting audio (video → MP3)...")
+                    orig_br = probe_audio_bitrate(src_path)
+                    target = orig_br if (orig_br and orig_br <= MP3_DEFAULT_BITRATE) else MP3_DEFAULT_BITRATE
+                    logger.info(
+                        "Extracting mp3 from %s: orig_br=%s target=%d",
+                        file.filename, orig_br, target,
+                    )
+                    extract_audio_to_mp3(src_path, mp3_path, target)
+                    stats["mp3_bitrate"] = target
+                src_path = mp3_path
+                stats["audio_cache_name"] = mp3_path.name
+        except FFmpegMissingError as e:
+            set_job("error", 0, str(e))
+            return {"error": "ffmpeg_missing", "detail": str(e)}
+        except Exception as e:
+            set_job("error", 0, f"Audio extraction failed: {e}")
+            return {"error": "extract_failed", "detail": str(e)}
+
         try:
             duration = probe_duration(src_path)
         except FFmpegMissingError as e:
@@ -541,19 +591,28 @@ async def transcribe(
         stats["char_count"] = len(merged_text)
         stats["segment_count"] = len(all_segments)
 
-        # ── Phase 2: Forced Alignment via CrispASR (CPU, no swap) ──────
+        # ── Phase 2: Forced Alignment via CrispASR (CPU, parallel) ─────
+        # CrispASR reloads the model on every chunk, so alignment is run in
+        # parallel across a bounded thread pool (see forced_aligner.align_many).
         if align and aligner.available and chunk_infos:
             t_align_start = time.monotonic()
+            total = len(chunk_infos)
             set_job("aligning", 85, "Running forced alignment (CrispASR)...")
+
+            def _align_progress(done: int, total: int) -> None:
+                set_job(
+                    "aligning",
+                    85 + int(10 * done / total),
+                    f"Aligning chunk {done}/{total}...",
+                )
+
             try:
+                per_chunk = aligner.align_many(
+                    [(p, t, s) for (p, s, t) in chunk_infos],
+                    progress_cb=_align_progress,
+                )
                 word_segments: list[dict] = []
-                for i, (chunk_path, start_offset, text) in enumerate(chunk_infos, 1):
-                    set_job(
-                        "aligning",
-                        85 + int(10 * i / len(chunk_infos)),
-                        f"Aligning chunk {i}/{len(chunk_infos)}...",
-                    )
-                    words = aligner.align_chunk(chunk_path, text, start_offset)
+                for words in per_chunk:
                     word_segments.extend(words)
 
                 if word_segments:
@@ -594,6 +653,7 @@ async def transcribe(
                 segments=all_segments,
                 stats=stats,
                 align_used=stats.get("aligner_used", False),
+                audio_cache_name=stats.get("audio_cache_name"),
             )
             history_id = record["id"]
         except Exception as e:
@@ -658,6 +718,55 @@ async def history_delete(hid: str):
 async def history_clear():
     n = history_store.clear()
     return {"cleared": n}
+
+
+@app.get("/api/audio-cache")
+async def audio_cache_list():
+    """List cached converted-audio MP3s with aggregate size."""
+    items = []
+    total = 0
+    for p in sorted(AUDIO_CACHE_DIR.glob("*.mp3"), key=lambda x: x.stat().st_mtime, reverse=True):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        total += st.st_size
+        items.append({
+            "name": p.name,
+            "size": st.st_size,
+            "mtime": st.st_mtime,
+        })
+    return {"count": len(items), "size_bytes": total, "items": items}
+
+
+@app.delete("/api/audio-cache")
+async def audio_cache_clear():
+    """Delete all cached converted-audio MP3s."""
+    cleared = 0
+    bytes_freed = 0
+    for p in AUDIO_CACHE_DIR.glob("*.mp3"):
+        try:
+            sz = p.stat().st_size
+            p.unlink()
+            cleared += 1
+            bytes_freed += sz
+        except Exception:
+            pass
+    logger.info("Cleared audio cache: %d files, %d bytes", cleared, bytes_freed)
+    return {"cleared": cleared, "bytes_freed": bytes_freed}
+
+
+@app.get("/api/audio-cache/{name}")
+async def audio_cache_get(name: str):
+    """Serve a cached converted-audio MP3 for playback."""
+    # Defend against path traversal: only the basename, must exist in cache dir.
+    safe_name = Path(name).name
+    if safe_name != name:
+        return JSONResponse({"error": "bad_request", "detail": "invalid name"}, status_code=400)
+    target = AUDIO_CACHE_DIR / safe_name
+    if not target.is_file() or target.suffix.lower() != ".mp3":
+        return JSONResponse({"error": "not_found", "detail": "no such cached audio"}, status_code=404)
+    return FileResponse(str(target), media_type="audio/mpeg", filename=safe_name)
 
 
 if STATIC_DIR.exists():

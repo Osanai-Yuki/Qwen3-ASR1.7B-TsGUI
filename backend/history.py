@@ -1,8 +1,10 @@
-"""Transcription history persistence (no audio retained).
+"""Transcription history persistence.
 
 Stores per-job records as JSON files in ``data/history/<id>.json``.
 Each record contains the merged text, segment list, performance stats,
-and identifying metadata. Audio data is *never* written.
+and identifying metadata. Raw uploaded audio/video is never persisted,
+but MP3s converted from video sources are cached separately under
+``data/audio_cache/`` and referenced by ``audio_cache_name``.
 """
 import json
 import logging
@@ -40,6 +42,7 @@ class HistoryStore:
         segments: list[dict],
         stats: dict,
         align_used: bool = False,
+        audio_cache_name: str | None = None,
     ) -> dict:
         hid = _safe_id()
         record = {
@@ -50,6 +53,7 @@ class HistoryStore:
             "segments": segments,
             "stats": stats,
             "align_used": bool(align_used),
+            "audio_cache_name": audio_cache_name,
         }
         path = self._path(hid)
         with _lock:
@@ -76,6 +80,7 @@ class HistoryStore:
                         "char_count": data.get("stats", {}).get("char_count", 0),
                         "align_used": data.get("align_used", False),
                         "segment_count": data.get("stats", {}).get("segment_count", 0),
+                        "audio_cache_name": data.get("audio_cache_name"),
                     })
                 except Exception as e:
                     logger.warning("Skipping unreadable history %s: %s", p.name, e)
