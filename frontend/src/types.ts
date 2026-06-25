@@ -47,6 +47,7 @@ export interface HealthResponse {
   current_model: string | null;
   aligner_available: boolean;
   aligner_status: string;
+  aligner_backend: string;
 }
 
 /** GET /api/readiness — boot sequence progress. */

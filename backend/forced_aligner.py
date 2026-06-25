@@ -26,6 +26,12 @@ _lib_signatures_set: bool = False
 # Keep workers×threads comfortably below core count.
 ALIGN_N_THREADS = int(os.environ.get("ALIGN_N_THREADS", "4"))
 ALIGN_MAX_WORKERS = max(1, min(int(os.environ.get("ALIGN_MAX_WORKERS", "3")), 4))
+# Safety cap: when ASR hallucinates extremely long text the forced aligner
+# creates a huge attention matrix (O(seq_len²)) that can exhaust RAM (>5 GB).
+# Truncating before alignment prevents the crash while keeping the alignment
+# useful for the first portion of the chunk. 400 chars ≈ 60-70 spoken words
+# — well above any realistic 25s utterance, far below the danger zone.
+ALIGN_MAX_CHARS = int(os.environ.get("ALIGN_MAX_CHARS", "400"))
 
 
 def _resolve_app_root() -> Path:
@@ -234,6 +240,14 @@ class ForcedAligner:
         """
         if not text.strip():
             return []
+
+        if len(text) > ALIGN_MAX_CHARS:
+            logger.warning(
+                "Truncating alignment text: %d → %d chars (set ALIGN_MAX_CHARS "
+                "to raise; long ASR output may indicate hallucination)",
+                len(text), ALIGN_MAX_CHARS,
+            )
+            text = text[:ALIGN_MAX_CHARS]
 
         if _load_lib() is None:
             logger.warning("CrispASR DLL unavailable — skipping alignment")

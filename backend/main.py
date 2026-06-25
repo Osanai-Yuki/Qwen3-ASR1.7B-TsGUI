@@ -9,6 +9,7 @@ import logging
 import threading
 import time
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -19,7 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from .llamarunner import LlamaRunner
-from .forced_aligner import ForcedAligner
+from .forced_aligner import ForcedAligner, ALIGN_MAX_WORKERS
+from .aligner_gpu import GPUAligner, GPU_ALIGNER_MODEL_PATH, _gpu_aligner_available
 from .audio_chunk import (
     split_audio,
     probe_duration,
@@ -106,6 +108,22 @@ KV_QUANT = TUNING["kv_quant"]
 DEFAULT_NGL = TUNING["n_gpu_layers"]
 DEFAULT_THREADS = TUNING["threads"]
 CHUNK_SECONDS = float(os.environ.get("CHUNK_SECONDS", "25"))
+
+# Aligner backend: "cpu" (CrispASR via ctypes, no extra deps) or
+# "gpu" (official qwen-asr, unloads ASR from VRAM first then loads aligner).
+ALIGNER_BACKEND = os.environ.get("ALIGNER_BACKEND", "gpu").lower()
+if ALIGNER_BACKEND not in ("cpu", "gpu"):
+    ALIGNER_BACKEND = "cpu"
+
+# Lazy — evaluated at boot time so that env vars set after import still work.
+_gpu_backend_ready: bool | None = None  # None = not yet checked
+
+
+def _is_gpu_backend_ready() -> bool:
+    global _gpu_backend_ready
+    if _gpu_backend_ready is None:
+        _gpu_backend_ready = ALIGNER_BACKEND == "gpu" and _gpu_aligner_available()
+    return _gpu_backend_ready
 
 ASR_MODEL = str(ASR_MODELS_DIR / "Qwen3-ASR-1.7B-Q8_0.gguf")
 ASR_MMPROJ = str(ASR_MODELS_DIR / "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf")
@@ -309,11 +327,23 @@ def _boot_sequence():
         except Exception:
             _set_boot(asr_warmup=True, phase="aligner_check")
 
-    if aligner.available:
+    if ALIGNER_BACKEND == "gpu":
+        if _is_gpu_backend_ready():
+            _set_boot(aligner_loaded=True, aligner_warmup=True, phase="ready", ready=True)
+            logger.info("Aligner backend: GPU (qwen-asr, model at %s)", GPU_ALIGNER_MODEL_PATH)
+        else:
+            logger.warning(
+                "ALIGNER_BACKEND=gpu but qwen-asr/model not available; "
+                "alignment will be skipped.  Install: pip install qwen-asr torch transformers "
+                "&& huggingface-cli download Qwen/Qwen3-ForcedAligner-0.6B --local-dir %s",
+                GPU_ALIGNER_MODEL_PATH,
+            )
+            _set_boot(aligner_loaded=False, aligner_warmup=False, phase="ready", ready=True)
+    elif aligner.available:
         _set_boot(phase="aligner_loading", aligner_loaded=True)
         from .forced_aligner import ALIGN_MAX_WORKERS, ALIGN_N_THREADS
         logger.info(
-            "Aligner config: workers=%d, threads/call=%d (parallel chunk alignment)",
+            "Aligner backend: CPU (CrispASR, workers=%d threads=%d)",
             ALIGN_MAX_WORKERS, ALIGN_N_THREADS,
         )
         try:
@@ -350,8 +380,13 @@ async def health():
         "backend": True,
         "llama_server": runner.is_alive(),
         "current_model": runner.current_model,
-        "aligner_available": aligner.available,
-        "aligner_status": aligner.lib_status,
+        "aligner_available": aligner.available or _is_gpu_backend_ready(),
+        "aligner_status": (
+            f"gpu:qwen-asr" if _is_gpu_backend_ready()
+            else f"cpu:crispasr" if aligner.available
+            else aligner.lib_status
+        ),
+        "aligner_backend": ALIGNER_BACKEND,
     }
 
 
@@ -442,6 +477,88 @@ async def _transcribe_chunk(client: httpx.AsyncClient, chunk_path: Path) -> dict
     return data
 
 
+def _gpu_swap_align(
+    jobs: list[tuple[Path, str, float]],
+    asr_segments_raw: list[dict],
+    *,
+    all_segments: list[dict],
+    stats: dict,
+    t_align_start: float,
+) -> None:
+    """GPU alignment path: unload ASR, load qwen-asr aligner, align, reload ASR.
+
+    This swaps the GPU occupant — llama-server is stopped to free VRAM,
+    then the official Qwen3-ForcedAligner is loaded locally and kept warm
+    for all alignment jobs.  After alignment the aligner is released and
+    llama-server restarted so the system is ready for the next request.
+
+    On any failure the ASR model is *always* reloaded (best-effort) and
+    the ASR segments are left intact.
+    """
+    # 1. Unload ASR from GPU.
+    set_job("aligning", 80, "Switching GPU — unloading ASR...")
+    logger.info("GPU swap: stopping llama-server to free VRAM")
+    runner.stop()
+
+    gpu_aligner: GPUAligner | None = None
+    try:
+        # 2. Load GPU aligner.
+        set_job("aligning", 83, "Loading GPU forced aligner...")
+        gpu_aligner = GPUAligner(GPU_ALIGNER_MODEL_PATH)
+        if not gpu_aligner.available:
+            raise RuntimeError(f"GPU aligner model not found at {GPU_ALIGNER_MODEL_PATH}")
+        gpu_aligner.load()
+
+        # 3. Run alignment (NAR forward pass per chunk, model stays on GPU).
+        set_job("aligning", 85, "Running GPU forced alignment...")
+        total_jobs = len(jobs)
+
+        def _progress(done: int, total: int) -> None:
+            set_job(
+                "aligning",
+                85 + int(8 * done / total),
+                f"GPU align chunk {done}/{total}...",
+            )
+
+        per_chunk = gpu_aligner.align_many(jobs, progress_cb=_progress)
+        word_segments: list[dict] = []
+        for words in per_chunk:
+            word_segments.extend(words)
+
+        if word_segments:
+            resegmented = resegment_words(
+                word_segments,
+                original_segments=asr_segments_raw,
+            )
+            all_segments.clear()
+            all_segments.extend(resegmented if resegmented else word_segments)
+            stats["word_count"] = len(word_segments)
+            stats["aligner_used"] = True
+            stats["aligner_model"] = "Qwen3-ForcedAligner-0.6B (GPU)"
+
+        logger.info("GPU alignment complete: %d words", len(word_segments))
+    except Exception as e:
+        logger.warning("GPU align failed, keeping ASR timestamps: %s", e)
+    finally:
+        # 4. Release aligner from VRAM.
+        if gpu_aligner is not None:
+            gpu_aligner.close()
+            gpu_aligner = None
+
+        # 5. Reload ASR onto GPU (best-effort — if this fails the next
+        #    transcription will start a fresh server via _boot_sequence
+        #    or the user can restart the app).
+        set_job("aligning", 93, "Reloading ASR model...")
+        try:
+            _start_asr()
+            logger.info("ASR model reloaded after GPU swap")
+        except Exception as e:
+            logger.error("Failed to reload ASR after GPU swap: %s", e)
+            set_job("aligning", 93, "ASR reload failed — restart required")
+
+        stats["align_time"] = round(time.monotonic() - t_align_start, 3)
+
+
 def _shift_segments(segments: list[dict], offset: float) -> list[dict]:
     shifted = []
     for s in segments or []:
@@ -490,6 +607,10 @@ async def transcribe(
         "audio_cache_name": None,
         "mp3_bitrate": None,
     }
+
+    # Initialized here so the `finally` below can safely reference it even on
+    # early-return paths that occur before the alignment pipeline is set up.
+    align_pool: ThreadPoolExecutor | None = None
 
     try:
         # ── Video handling: extract (or reuse) a cached MP3 ───────────
@@ -545,11 +666,25 @@ async def transcribe(
 
         all_segments: list[dict] = []
         all_text_parts: list[str] = []
-        chunk_infos: list[tuple[Path, float, str]] = []
         asr_segments_raw: list[dict] = []
         total = len(chunks)
 
-        # ── Phase 1: ASR ───────────────────────────────────────────────
+        # ── Alignment pipeline setup ───────────────────────────────────
+        # CPU: CrispASR via ctypes, parallelized across chunks (pipelined
+        #   with ASR to overlap GPU/CPU work).
+        # GPU: official qwen-asr, loaded AFTER ASR finishes (llama-server
+        #   is stopped to free VRAM) and kept in GPU memory for all chunks.
+        gpu_swap = ALIGNER_BACKEND == "gpu" and align and _is_gpu_backend_ready()
+        do_align_cpu = align and aligner.available and not gpu_swap
+        align_pool = (
+            ThreadPoolExecutor(max_workers=ALIGN_MAX_WORKERS) if do_align_cpu else None
+        )
+        align_futures: list = []  # CPU: Future[list[dict]]; GPU: unused
+        # GPU backend defers submission until Phase 2 — collect jobs here.
+        gpu_align_jobs: list[tuple[Path, str, float]] = []
+        t_align_start = time.monotonic() if (do_align_cpu or gpu_swap) else None
+
+        # ── Phase 1: ASR (+ pipelined alignment submission, CPU only) ──
         t_asr_start = time.monotonic()
         async with httpx.AsyncClient(timeout=600.0) as client:
             for i, (chunk_path, start_offset) in enumerate(chunks, 1):
@@ -562,9 +697,13 @@ async def transcribe(
                 try:
                     data = await _transcribe_chunk(client, chunk_path)
                 except httpx.ReadTimeout:
+                    if align_pool:
+                        align_pool.shutdown(wait=False, cancel_futures=True)
                     set_job("error", 0, f"Chunk {i} timed out")
                     return {"error": "timeout", "detail": f"Chunk {i}/{total} timed out after 600s"}
                 except Exception as e:
+                    if align_pool:
+                        align_pool.shutdown(wait=False, cancel_futures=True)
                     logger.error("Chunk %d failed: %s", i, e)
                     set_job("error", 0, f"Chunk {i} failed: {e}")
                     return {"error": "chunk_failed", "detail": str(e)}
@@ -578,42 +717,49 @@ async def transcribe(
                     all_segments.extend(_shift_segments(segments, start_offset))
                 if text:
                     all_text_parts.append(text)
-                    chunk_infos.append((chunk_path, start_offset, text))
+                    if do_align_cpu and align_pool is not None:
+                        align_futures.append(
+                            align_pool.submit(aligner.align_chunk, chunk_path, text, start_offset)
+                        )
+                    elif gpu_swap:
+                        gpu_align_jobs.append((chunk_path, text, start_offset))
 
         stats["asr_time"] = round(time.monotonic() - t_asr_start, 3)
 
         merged_text = " ".join(all_text_parts).strip()
 
         if not merged_text and not all_segments:
+            if align_pool:
+                align_pool.shutdown(wait=False, cancel_futures=True)
             set_job("error", 0, "No transcription text returned")
             return {"error": "empty_result", "detail": "All chunks returned empty"}
 
         stats["char_count"] = len(merged_text)
         stats["segment_count"] = len(all_segments)
 
-        # ── Phase 2: Forced Alignment via CrispASR (CPU, parallel) ─────
-        # CrispASR reloads the model on every chunk, so alignment is run in
-        # parallel across a bounded thread pool (see forced_aligner.align_many).
-        if align and aligner.available and chunk_infos:
-            t_align_start = time.monotonic()
-            total = len(chunk_infos)
-            set_job("aligning", 85, "Running forced alignment (CrispASR)...")
-
-            def _align_progress(done: int, total: int) -> None:
-                set_job(
-                    "aligning",
-                    85 + int(10 * done / total),
-                    f"Aligning chunk {done}/{total}...",
-                )
-
+        # ── Phase 2: Alignment ─────────────────────────────────────────
+        if gpu_swap and gpu_align_jobs:
+            # ── GPU path: unload ASR, load aligner on GPU, realign, reload ASR
+            assert t_align_start is not None
+            _gpu_swap_align(
+                gpu_align_jobs, asr_segments_raw,
+                all_segments=all_segments, stats=stats, t_align_start=t_align_start,
+            )
+        elif do_align_cpu and align_futures:
+            # ── CPU path: drain CrispASR futures (most already completed) ─
+            assert align_pool is not None and t_align_start is not None
+            set_job("aligning", 85, "Finalizing forced alignment (CrispASR)...")
+            total_align = len(align_futures)
             try:
-                per_chunk = aligner.align_many(
-                    [(p, t, s) for (p, s, t) in chunk_infos],
-                    progress_cb=_align_progress,
-                )
                 word_segments: list[dict] = []
-                for words in per_chunk:
+                for done_i, fut in enumerate(align_futures, 1):
+                    words = fut.result()
                     word_segments.extend(words)
+                    set_job(
+                        "aligning",
+                        85 + int(10 * done_i / total_align),
+                        f"Aligning chunk {done_i}/{total_align}...",
+                    )
 
                 if word_segments:
                     resegmented = resegment_words(
@@ -629,7 +775,9 @@ async def transcribe(
             except Exception as e:
                 stats["align_time"] = round(time.monotonic() - t_align_start, 3)
                 logger.warning("Forced alignment failed, keeping ASR timestamps: %s", e)
-        elif align and not aligner.available:
+            finally:
+                align_pool.shutdown(wait=False)
+        elif align and not aligner.available and not gpu_swap:
             logger.info("Alignment requested but ForcedAligner not available (%s) — skipping", aligner.lib_status)
 
         if not stats["word_count"]:
@@ -666,6 +814,10 @@ async def transcribe(
             "history_id": history_id,
         }
     finally:
+        # Defensive: ensure the alignment pool is always released, even on
+        # early-return / exception paths that bypass the drain block.
+        if align_pool is not None:
+            align_pool.shutdown(wait=False, cancel_futures=True)
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
