@@ -11,6 +11,9 @@ from backend.text_clean import clean_asr_text, clean_segments
 
 
 def make_client(runner_alive: bool = True, aligner_available: bool = False, tmp_path=None):
+    # Always use CPU backend in tests (no GPU deps / model loading needed).
+    main_mod.ALIGNER_BACKEND = "cpu"
+    main_mod._gpu_backend_ready = False
     mock_runner = MagicMock()
     mock_runner.is_alive.return_value = runner_alive
     mock_runner.base_url = "http://127.0.0.1:8080"
@@ -61,7 +64,7 @@ def test_health_ok():
     assert data["llama_server"] is True
     assert data["current_model"] == "Qwen3-ASR-1.7B-Q8_0"
     assert data["aligner_available"] is True
-    assert data["aligner_status"] == "ready"
+    assert "cpu" in data["aligner_status"] or data["aligner_status"] == "ready"
 
 
 def test_health_down():
@@ -328,3 +331,49 @@ def test_transcribe_persists_history(tmp_path, monkeypatch):
     assert body["history_id"]
     items = client.get("/api/history").json()["items"]
     assert any(i["filename"] == "ABC.mp3" for i in items)
+
+
+def test_transcribe_pipeline_aligns(tmp_path, monkeypatch):
+    """Alignment is pipelined with ASR: each chunk's align is submitted as soon
+    as its ASR text is ready, then drained. Verify the wiring produces aligned
+    word segments and the aligner stats are populated."""
+    client = make_client(tmp_path=tmp_path, aligner_available=True)
+
+    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25)) for i in range(3)]
+    for p, _ in fake_chunks:
+        p.write_bytes(_make_wav_bytes(0.1))
+    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 75.0)
+    monkeypatch.setattr(main_mod, "split_audio", lambda _src, _out, _sec: fake_chunks)
+
+    async def fake_chunk(_client, path):
+        # Distinct text per chunk so we can confirm ordering is preserved.
+        idx = int(path.stem[1:])
+        return {"text": f"words{idx}", "segments": [{"start": 0.0, "end": 1.0, "text": f"words{idx}"}]}
+
+    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
+
+    # Mock aligner.align_chunk to return one fake word per chunk, offset by
+    # chunk_start so we can confirm the right chunk was aligned.
+    def fake_align_chunk(wav_path, text, chunk_start, n_threads=4):
+        return [{"word": text, "start": chunk_start, "end": chunk_start + 1.0, "text": text}]
+
+    monkeypatch.setattr(main_mod.aligner, "align_chunk", fake_align_chunk)
+    # model_path.stem is referenced for stats; keep it accessible.
+    main_mod.aligner.model_path = tmp_path / "aligner-model.gguf"
+
+    r = client.post(
+        "/api/transcribe",
+        files={"file": ("audio.wav", _make_wav_bytes(0.1), "audio/wav")},
+        data={"align": "true"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    stats = body["stats"]
+    assert stats["aligner_used"] is True
+    assert stats["word_count"] == 3
+    assert stats["align_time"] >= 0
+    # All three chunks' text survived through the pipeline.
+    assert "words0" in body["text"]
+    assert "words1" in body["text"]
+    assert "words2" in body["text"]
+    assert body["history_id"]

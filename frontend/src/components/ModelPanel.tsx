@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchModels, switchModel } from "../api";
+import { fetchHealth, fetchModels, switchModel } from "../api";
 import { isApiError, type ModelsResponse, type SwitchModelRequest } from "../types";
 
 interface Props {
@@ -12,6 +12,7 @@ export function ModelPanel({ switching, onSwitchStart, onSwitchDone }: Props) {
   const [data, setData] = useState<ModelsResponse | null>(null);
   const [selected, setSelected] = useState<string>("");
   const [showTuning, setShowTuning] = useState(false);
+  const [alignerBackend, setAlignerBackend] = useState<string>("");
 
   // Tuning fields (initialized from backend defaults on load)
   const [ctxSize, setCtxSize] = useState<number>(16384);
@@ -31,6 +32,9 @@ export function ModelPanel({ switching, onSwitchStart, onSwitchDone }: Props) {
           if (d.tuning.threads != null) setThreads(String(d.tuning.threads));
         }
       })
+      .catch(() => {});
+    fetchHealth()
+      .then((h) => setAlignerBackend(h.aligner_backend))
       .catch(() => {});
   }, []);
 
@@ -72,9 +76,18 @@ export function ModelPanel({ switching, onSwitchStart, onSwitchDone }: Props) {
 
       {/* Current model */}
       <p className="font-mono text-xs text-neutral-500 mb-1">Current</p>
-      <p className="font-mono text-sm font-bold text-neutral-100 mb-4 break-all">
+      <p className="font-mono text-sm font-bold text-neutral-100 break-all">
         {currentName || "—"}
       </p>
+      {alignerBackend && (
+        <p className="font-mono text-[10px] text-neutral-600 mt-1 mb-4">
+          Aligner:{" "}
+          <span className={alignerBackend === "cpu" ? "text-neutral-500" : "text-amber-600"}>
+            {alignerBackend === "gpu" ? "GPU (qwen-asr)" : "CPU (CrispASR)"}
+          </span>
+        </p>
+      )}
+      {!alignerBackend && <div className="mb-4" />}
 
       {/* Model selector */}
       <label className="font-mono text-xs text-neutral-500 mb-1 block">

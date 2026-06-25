@@ -2,6 +2,7 @@ import json
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -44,7 +45,12 @@ def probe_duration(input_path: Path) -> float:
 
 
 def split_audio(input_path: Path, out_dir: Path, chunk_seconds: float) -> list[tuple[Path, float]]:
-    """Split audio into mono 16 kHz wav chunks. Returns [(chunk_path, start_seconds), ...]."""
+    """Split audio into mono 16 kHz wav chunks. Returns [(chunk_path, start_seconds), ...].
+
+    Chunks are extracted in parallel via a thread pool — each ffmpeg invocation
+    is independent and I/O-bound, so concurrency speeds up the split stage
+    without changing the output. Results are returned in chronological order.
+    """
     ffmpeg = _resolve_ffmpeg("ffmpeg")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -52,16 +58,23 @@ def split_audio(input_path: Path, out_dir: Path, chunk_seconds: float) -> list[t
     if duration <= 0:
         raise RuntimeError("Could not determine audio duration")
 
-    chunks: list[tuple[Path, float]] = []
+    # Build the extraction plan first (deterministic order).
+    plan: list[tuple[int, float]] = []
     start = 0.0
     idx = 0
     while start < duration:
-        out_path = out_dir / f"chunk_{idx:04d}.wav"
+        plan.append((idx, start))
+        start += chunk_seconds
+        idx += 1
+
+    def extract(item: tuple[int, float]) -> tuple[Path, float] | None:
+        i, s = item
+        out_path = out_dir / f"chunk_{i:04d}.wav"
         cmd = [
             ffmpeg,
             "-y",
             "-loglevel", "error",
-            "-ss", f"{start:.3f}",
+            "-ss", f"{s:.3f}",
             "-t", f"{chunk_seconds:.3f}",
             "-i", str(input_path),
             "-ac", "1",
@@ -71,9 +84,18 @@ def split_audio(input_path: Path, out_dir: Path, chunk_seconds: float) -> list[t
         ]
         subprocess.run(cmd, check=True, capture_output=True)
         if out_path.stat().st_size > 44:
-            chunks.append((out_path, start))
-        start += chunk_seconds
-        idx += 1
+            return (out_path, s)
+        return None
+
+    workers = max(1, min(len(plan), 8))
+    chunks: list[tuple[Path, float]] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # map preserves input order; filter empty results.
+        for res in pool.map(extract, plan):
+            if res is not None:
+                chunks.append(res)
+
+    chunks.sort(key=lambda c: c[1])
     return chunks
 
 
