@@ -9,11 +9,10 @@ interface Props {
   seekTo: number | null;
 }
 
-/** Minimal audio player wired to the transcript highlight system. */
+/** Bottom audio player bar wired to the transcript highlight system. */
 export function AudioPlayer({ audioUrl, onTimeUpdate, seekTo }: Props) {
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  // Propagate timeupdate events upward
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
@@ -22,7 +21,6 @@ export function AudioPlayer({ audioUrl, onTimeUpdate, seekTo }: Props) {
     return () => el.removeEventListener("timeupdate", handler);
   }, [onTimeUpdate]);
 
-  // Handle external seek requests (from clicking a transcript line)
   useEffect(() => {
     if (seekTo !== null && audioRef.current) {
       audioRef.current.currentTime = seekTo;
@@ -33,12 +31,12 @@ export function AudioPlayer({ audioUrl, onTimeUpdate, seekTo }: Props) {
   if (!audioUrl) return null;
 
   return (
-    <div className="border border-neutral-800 p-4 animate-fade-in">
+    <div className="px-4 sm:px-6 py-2.5 flex justify-center">
       <audio
         ref={audioRef}
         src={audioUrl}
         controls
-        className="w-full h-8 [&::-webkit-media-controls-panel]:bg-neutral-900"
+        className="w-[40%] min-w-[260px] max-w-[480px] h-9 [&::-webkit-media-controls-panel]:bg-neutral-900"
       />
     </div>
   );

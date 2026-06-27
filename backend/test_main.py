@@ -107,21 +107,21 @@ def test_transcribe_merges_chunks(tmp_path, monkeypatch):
     client = make_client(tmp_path=tmp_path)
 
     fake_chunks = [
-        (tmp_path / "c0.wav", 0.0),
-        (tmp_path / "c1.wav", 25.0),
+        (tmp_path / "c0.wav", 0.0, 0.0),
+        (tmp_path / "c1.wav", 25.0, 0.0),
     ]
-    for p, _ in fake_chunks:
+    for p, _, _ in fake_chunks:
         p.write_bytes(_make_wav_bytes(0.1))
 
     monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 50.0)
-    monkeypatch.setattr(main_mod, "split_audio", lambda _src, _out, _sec: fake_chunks)
+    monkeypatch.setattr(main_mod, "split_audio", lambda _src, _out, _sec, _ov, **_kw: fake_chunks)
 
     responses = [
         {"text": "hello", "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}]},
         {"text": "world", "segments": [{"start": 0.0, "end": 1.0, "text": "world"}]},
     ]
 
-    async def fake_chunk(client_arg, chunk_path):
+    async def fake_chunk(client_arg, chunk_path, initial_prompt=None):
         return responses.pop(0)
 
     monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
@@ -311,12 +311,12 @@ def test_history_endpoints(tmp_path):
 def test_transcribe_persists_history(tmp_path, monkeypatch):
     client = make_client(tmp_path=tmp_path)
 
-    fake_chunks = [(tmp_path / "c0.wav", 0.0)]
+    fake_chunks = [(tmp_path / "c0.wav", 0.0, 0.0)]
     fake_chunks[0][0].write_bytes(_make_wav_bytes(0.1))
     monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 1.0)
-    monkeypatch.setattr(main_mod, "split_audio", lambda _src, _out, _sec: fake_chunks)
+    monkeypatch.setattr(main_mod, "split_audio", lambda _src, _out, _sec, _ov, **_kw: fake_chunks)
 
-    async def fake_chunk(_client, _path):
+    async def fake_chunk(_client, _path, initial_prompt=None):
         return {"text": "ok", "segments": [{"start": 0.0, "end": 1.0, "text": "ok"}]}
 
     monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
@@ -339,13 +339,13 @@ def test_transcribe_pipeline_aligns(tmp_path, monkeypatch):
     word segments and the aligner stats are populated."""
     client = make_client(tmp_path=tmp_path, aligner_available=True)
 
-    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25)) for i in range(3)]
-    for p, _ in fake_chunks:
+    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25), 0.0) for i in range(3)]
+    for p, _, _ in fake_chunks:
         p.write_bytes(_make_wav_bytes(0.1))
     monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 75.0)
-    monkeypatch.setattr(main_mod, "split_audio", lambda _src, _out, _sec: fake_chunks)
+    monkeypatch.setattr(main_mod, "split_audio", lambda _src, _out, _sec, _ov, **_kw: fake_chunks)
 
-    async def fake_chunk(_client, path):
+    async def fake_chunk(_client, path, initial_prompt=None):
         # Distinct text per chunk so we can confirm ordering is preserved.
         idx = int(path.stem[1:])
         return {"text": f"words{idx}", "segments": [{"start": 0.0, "end": 1.0, "text": f"words{idx}"}]}

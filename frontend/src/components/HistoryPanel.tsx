@@ -31,18 +31,18 @@ export function HistoryPanel({
   const cacheBytes = audioCache?.size_bytes ?? 0;
 
   return (
-    <div className="border border-neutral-800 p-6">
+    <div>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="font-mono text-xs uppercase tracking-widest text-neutral-500">
+        <h2 className="font-mono text-xs uppercase tracking-widest text-white/45">
           History
           {items.length > 0 && (
-            <span className="text-neutral-600"> ({items.length})</span>
+            <span className="text-white/35"> ({items.length})</span>
           )}
         </h2>
         {items.length > 0 && (
           <button
             onClick={onClear}
-            className="font-mono text-[10px] uppercase tracking-widest text-neutral-500 hover:text-red-500 transition-colors"
+            className="font-mono text-[10px] uppercase tracking-widest text-white/45 hover:text-red-400 transition-colors"
           >
             Clear all
           </button>
@@ -50,14 +50,14 @@ export function HistoryPanel({
       </div>
 
       {cacheCount > 0 && (
-        <div className="flex items-center justify-between mb-4 px-3 py-2 border border-neutral-800 bg-neutral-950">
-          <span className="font-mono text-[10px] text-neutral-500">
+        <div className="flex items-center justify-between mb-4 px-3 py-2 rounded-xl bg-white/5 border border-white/8">
+          <span className="font-mono text-[10px] text-white/55">
             Cached audio: {cacheCount} file{cacheCount > 1 ? "s" : ""} ·{" "}
             {formatMB(cacheBytes)}
           </span>
           <button
             onClick={onClearAudioCache}
-            className="font-mono text-[10px] uppercase tracking-widest text-neutral-500 hover:text-red-500 transition-colors"
+            className="font-mono text-[10px] uppercase tracking-widest text-white/45 hover:text-red-400 transition-colors"
           >
             Clear cache
           </button>
@@ -65,32 +65,32 @@ export function HistoryPanel({
       )}
 
       {items.length === 0 ? (
-        <p className="font-mono text-xs text-neutral-600">No history yet.</p>
+        <p className="font-mono text-xs text-white/40">No history yet.</p>
       ) : (
-        <ul className="space-y-1 max-h-72 overflow-y-auto">
+        <ul className="space-y-1.5 max-h-72 overflow-y-auto">
           {items.map((item) => (
             <li
               key={item.id}
               onClick={() => onRestore(item.id)}
-              className={`group flex items-center gap-3 px-3 py-2 border cursor-pointer transition-colors ${
+              className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all border ${
                 activeId === item.id
-                  ? "border-neutral-500 bg-neutral-900"
-                  : "border-transparent hover:border-neutral-800 hover:bg-neutral-950"
+                  ? "border-white/25 bg-white/12"
+                  : "border-transparent hover:border-white/12 hover:bg-white/6"
               }`}
             >
               <div className="flex-1 min-w-0">
-                <p className="font-mono text-xs font-bold text-neutral-200 truncate flex items-center gap-1">
+                <p className="font-mono text-xs font-bold text-white/90 truncate flex items-center gap-1">
                   <span className="truncate">{item.filename ?? "unknown"}</span>
                   {item.audio_cache_name && (
                     <span
-                      className="text-amber-600 shrink-0"
+                      className="text-amber-400 shrink-0"
                       title="converted MP3 cached"
                     >
                       ♪
                     </span>
                   )}
                 </p>
-                <p className="font-mono text-[10px] text-neutral-600">
+                <p className="font-mono text-[10px] text-white/40 mt-0.5">
                   {formatDateTime(item.created_at)} ·{" "}
                   {formatDuration(item.duration)} · {item.segment_count} seg
                   {item.align_used && " · aligned"}
@@ -101,7 +101,7 @@ export function HistoryPanel({
                   e.stopPropagation();
                   onDelete(item.id);
                 }}
-                className="font-mono text-xs text-neutral-700 group-hover:text-neutral-400 hover:!text-red-500 transition-colors"
+                className="font-mono text-xs text-white/30 group-hover:text-white/60 hover:!text-red-400 transition-colors"
                 title="Delete"
               >
                 ✕

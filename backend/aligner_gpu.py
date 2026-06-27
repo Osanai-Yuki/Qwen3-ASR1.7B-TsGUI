@@ -9,7 +9,17 @@ import logging
 import os
 from pathlib import Path
 
+# Reduce CUDA fragmentation on small-VRAM cards (4 GB) — the PyTorch OOM
+# message explicitly recommends this when "reserved but unallocated" memory
+# is significant.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 logger = logging.getLogger("asr")
+
+# Reuse the same per-chunk text cap as the CPU backend so a hallucinated
+# long transcript can't blow up the attention matrix (a 400-char text on a
+# 25 s chunk tried to allocate 16 GiB → OOM on a 4 GB card).
+from .forced_aligner import ALIGN_MAX_CHARS
 
 _DEFAULT_GPU_MODEL_DIR = (
     Path(__file__).resolve().parent.parent / "models" / "aligner" / "official"
@@ -100,6 +110,16 @@ class GPUAligner:
         if not text.strip():
             return []
 
+        # Truncate hallucinated/over-long text — same guard as the CPU
+        # backend. Without it a long text forces a huge attention matrix
+        # (16 GiB on a 25 s chunk) and OOMs a 4 GB card.
+        if len(text) > ALIGN_MAX_CHARS:
+            logger.warning(
+                "GPU align: truncating text %d → %d chars for %s",
+                len(text), ALIGN_MAX_CHARS, wav_path.name,
+            )
+            text = text[:ALIGN_MAX_CHARS]
+
         self.load()
         assert self._model is not None and self._torch is not None
 
@@ -112,6 +132,9 @@ class GPUAligner:
             )
         except Exception as e:
             logger.warning("GPU align failed for %s: %s", wav_path.name, e)
+            # Free the failed pass's activations so the next chunk isn't
+            # poisoned by accumulated allocations.
+            self._torch.cuda.empty_cache()
             return []
 
         words: list[dict] = []
@@ -147,6 +170,11 @@ class GPUAligner:
         results: list[list[dict]] = []
         for i, (wav_path, text, chunk_start) in enumerate(items, 1):
             words = self.align_chunk(wav_path, text, chunk_start)
+            # Release per-chunk activations to keep VRAM bounded across a long
+            # batch — without this, allocations accumulate and OOM the card
+            # even though each chunk individually fits.
+            if self._torch is not None:
+                self._torch.cuda.empty_cache()
             results.append(words)
             if progress_cb is not None:
                 progress_cb(i, total)

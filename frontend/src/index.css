@@ -23,7 +23,7 @@
   --font-mono: "Geist Mono", "Consolas", "Courier New", monospace;
 }
 
-/* ── Base: pure black canvas, white type ──────────────────────────────── */
+/* ── Base: ambient gradient canvas (liquid-glass environment) ─────────── */
 html,
 body,
 #root {
@@ -32,32 +32,44 @@ body,
 
 body {
   margin: 0;
-  background: #000;
+  /* Soft, slowly-drifting color blobs create the "environment" that glass
+     layers refract. Fixed so they stay put while content scrolls. */
+  background:
+    radial-gradient(60vw 60vw at 15% 12%, rgba(56, 120, 220, 0.22), transparent 60%),
+    radial-gradient(55vw 55vw at 85% 18%, rgba(150, 80, 220, 0.20), transparent 60%),
+    radial-gradient(70vw 70vw at 70% 92%, rgba(40, 200, 180, 0.16), transparent 60%),
+    radial-gradient(50vw 50vw at 20% 85%, rgba(230, 120, 200, 0.14), transparent 60%),
+    #05060a;
   color: #fff;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  background-attachment: fixed;
 }
 
 ::selection {
-  background: #fff;
+  background: rgba(255, 255, 255, 0.9);
   color: #000;
 }
 
-/* ── Thin monochrome scrollbar ────────────────────────────────────────── */
+/* ── Thin translucent scrollbar ───────────────────────────────────────── */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #333 #000;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-track {
-  background: #000;
+  background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: #333;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
 }
 
 /* ── Animations ───────────────────────────────────────────────────────── */
@@ -113,4 +125,251 @@ body {
 }
 .animate-progress-glow {
   animation: progress-glow 2s ease-in-out infinite;
+}
+
+/* ── Drawer slide animations ─────────────────────────────────────────── */
+@keyframes slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+.animate-slide-in-left {
+  animation: slide-in-left 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.animate-slide-in-right {
+  animation: slide-in-right 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Liquid-glass primitives ─────────────────────────────────────────── */
+@layer components {
+  /* Frosted glass surface. Two box-shadows: a soft outer drop + a subtle
+     top inner highlight that mimics light catching the glass edge. The
+     1px border uses a low-opacity white for the rim, and a pseudo inner
+     gradient via background. */
+  .glass {
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.10) 0%,
+      rgba(255, 255, 255, 0.04) 40%,
+      rgba(255, 255, 255, 0.02) 100%
+    );
+    backdrop-filter: blur(18px) saturate(160%);
+    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.14) inset,   /* top highlight rim */
+      0 -1px 12px 0 rgba(255, 255, 255, 0.04) inset,
+      0 8px 32px 0 rgba(0, 0, 0, 0.45),            /* ambient drop shadow */
+      0 2px 8px 0 rgba(0, 0, 0, 0.30);
+  }
+  /* Stronger / more opaque glass for modals and drawers. */
+  .glass-strong {
+    background: linear-gradient(
+      135deg,
+      rgba(20, 22, 32, 0.78) 0%,
+      rgba(14, 16, 24, 0.72) 50%,
+      rgba(10, 12, 18, 0.78) 100%
+    );
+    backdrop-filter: blur(28px) saturate(170%);
+    -webkit-backdrop-filter: blur(28px) saturate(170%);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.18) inset,
+      0 -1px 16px 0 rgba(255, 255, 255, 0.05) inset,
+      0 24px 60px 0 rgba(0, 0, 0, 0.55),
+      0 8px 20px 0 rgba(0, 0, 0, 0.40);
+  }
+
+  /* Primary button: bright glass pill. */
+  .btn-primary {
+    @apply font-mono text-[13px] font-bold uppercase tracking-widest
+      px-4 py-2.5 rounded-xl
+      transition-all duration-200
+      active:scale-[0.97]
+      disabled:cursor-not-allowed
+      focus:outline-none focus:ring-2 focus:ring-white/50;
+    color: #05060a;
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.98) 0%,
+      rgba(220, 228, 240, 0.92) 100%
+    );
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.9) inset,
+      0 -6px 14px 0 rgba(180, 200, 230, 0.25) inset,
+      0 6px 18px 0 rgba(120, 160, 220, 0.30);
+  }
+  .btn-primary:hover {
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 1) 0%,
+      rgba(230, 236, 246, 0.96) 100%
+    );
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 1) inset,
+      0 -6px 16px 0 rgba(190, 210, 240, 0.35) inset,
+      0 8px 24px 0 rgba(140, 180, 240, 0.42);
+  }
+  .btn-primary:disabled {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.35);
+    box-shadow: none;
+  }
+
+  /* Ghost button: subtle glass outline. */
+  .btn-ghost {
+    @apply font-mono text-[13px] uppercase tracking-widest
+      px-3.5 py-2.5 rounded-xl
+      transition-all duration-200
+      active:scale-[0.97]
+      focus:outline-none focus:ring-2 focus:ring-white/30;
+    color: rgba(255, 255, 255, 0.75);
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.08) 0%,
+      rgba(255, 255, 255, 0.03) 100%
+    );
+    backdrop-filter: blur(12px) saturate(150%);
+    -webkit-backdrop-filter: blur(12px) saturate(150%);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.14) inset,
+      0 4px 14px 0 rgba(0, 0, 0, 0.25);
+  }
+  .btn-ghost:hover {
+    color: #fff;
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.16) 0%,
+      rgba(255, 255, 255, 0.07) 100%
+    );
+    border-color: rgba(255, 255, 255, 0.22);
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.22) inset,
+      0 6px 18px 0 rgba(0, 0, 0, 0.30);
+  }
+  .btn-ghost:disabled {
+    opacity: 0.32;
+    cursor: not-allowed;
+  }
+  .btn-ghost:disabled:hover {
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.08) 0%,
+      rgba(255, 255, 255, 0.03) 100%
+    );
+    border-color: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.75);
+  }
+}
+
+/* ── Animations ───────────────────────────────────────────────────────── */
+@keyframes pulse-block {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+.animate-pulse-block {
+  animation: pulse-block 1.2s ease-in-out infinite;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out both;
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-slide-up {
+  animation: slide-up 0.35s ease-out both;
+}
+
+@keyframes progress-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.25);
+  }
+}
+.animate-progress-glow {
+  animation: progress-glow 2s ease-in-out infinite;
+}
+
+/* ── Drawer slide animations ─────────────────────────────────────────── */
+@keyframes slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+.animate-slide-in-left {
+  animation: slide-in-left 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.animate-slide-in-right {
+  animation: slide-in-right 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Button system ───────────────────────────────────────────────────── */
+@layer components {
+  .btn-primary {
+    @apply font-mono text-[13px] font-bold uppercase tracking-widest bg-white text-black
+      px-4 py-2.5 rounded-lg
+      transition-all duration-200
+      hover:bg-neutral-200 active:scale-[0.98]
+      disabled:bg-neutral-800 disabled:text-neutral-600 disabled:cursor-not-allowed
+      focus:outline-none focus:ring-2 focus:ring-white/40;
+  }
+  .btn-ghost {
+    @apply font-mono text-[13px] uppercase tracking-widest text-neutral-400
+      border border-neutral-700 px-3.5 py-2.5 rounded-lg
+      transition-all duration-200
+      hover:text-white hover:border-neutral-500 hover:bg-neutral-900
+      active:scale-[0.98]
+      disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent
+      focus:outline-none focus:ring-2 focus:ring-white/30;
+  }
 }
