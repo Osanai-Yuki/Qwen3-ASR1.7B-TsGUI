@@ -14,6 +14,7 @@ import { useReadiness } from "./hooks/useReadiness";
 import {
   isApiError,
   type AudioCacheInfo,
+  type HealthResponse,
   type HistoryItem,
   type Segment,
   type Stats,
@@ -22,16 +23,15 @@ import { AudioPlayer } from "./components/AudioPlayer";
 import { BootOverlay } from "./components/BootOverlay";
 import { ExportBar } from "./components/ExportBar";
 import { HistoryPanel } from "./components/HistoryPanel";
-import { ModelPanel } from "./components/ModelPanel";
+import { ModelInfo } from "./components/ModelInfo";
 import { ProgressBar } from "./components/ProgressBar";
 import { StatsPanel } from "./components/StatsPanel";
 import { TranscriptPanel } from "./components/TranscriptPanel";
 import { UploadZone } from "./components/UploadZone";
 
 export default function App() {
-  const { state: readiness, ready, switching, failed, restart: restartReadiness } =
-    useReadiness();
-  const [alignerAvailable, setAlignerAvailable] = useState(false);
+  const { state: readiness, ready, switching, failed } = useReadiness();
+  const [health, setHealth] = useState<HealthResponse | null>(null);
 
   // Working state
   const [working, setWorking] = useState(false);
@@ -45,41 +45,38 @@ export default function App() {
   const [baseName, setBaseName] = useState("transcript");
   const [error, setError] = useState<string | null>(null);
 
-  // Audio playback state (Object URL of the uploaded file)
+  // Audio playback state
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState<number | null>(null);
   const [seekTo, setSeekTo] = useState<number | null>(null);
 
-  // History state
+  // History + cache state
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
-
-  // Converted-audio cache state (MP3s extracted from video sources)
   const [audioCache, setAudioCache] = useState<AudioCacheInfo | null>(null);
 
-  // Once ready, fetch health (for aligner availability) and history list.
+  // Overlay panels. Upload modal opens by default on entry (after boot) so
+  // the user can immediately drop a file; it can be dismissed freely.
+  const [uploadOpen, setUploadOpen] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
+
+  // Once ready, fetch health (model + aligner info) and history list.
   useEffect(() => {
     if (!ready || switching) return;
-    fetchHealth()
-      .then((h) => setAlignerAvailable(h.aligner_available))
-      .catch(() => {});
+    fetchHealth().then(setHealth).catch(() => {});
     refreshHistory();
     refreshAudioCache();
   }, [ready, switching]);
 
   const refreshHistory = useCallback(() => {
-    fetchHistory()
-      .then((r) => setHistoryItems(r.items))
-      .catch(() => {});
+    fetchHistory().then((r) => setHistoryItems(r.items)).catch(() => {});
   }, []);
 
   const refreshAudioCache = useCallback(() => {
-    fetchAudioCache()
-      .then((c) => setAudioCache(c))
-      .catch(() => {});
+    fetchAudioCache().then((c) => setAudioCache(c)).catch(() => {});
   }, []);
 
-  // Cleanup the current audio URL on unmount or replacement. Only Object URLs
-  // (blob:) created from uploaded files need revoking; backend cache URLs do not.
   const clearAudioUrl = useCallback(() => {
     setAudioUrl((prev) => {
       if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
@@ -88,7 +85,6 @@ export default function App() {
     setCurrentTime(null);
   }, []);
 
-  /** Set the audio source to a backend cached-MP3 URL (no revocation needed). */
   const setCacheAudioUrl = useCallback((cacheName: string) => {
     setAudioUrl((prev) => {
       if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
@@ -99,6 +95,7 @@ export default function App() {
 
   const handleTranscribe = useCallback(
     async (file: File, align: boolean) => {
+      setUploadOpen(false);
       setWorking(true);
       setError(null);
       setText("");
@@ -108,10 +105,6 @@ export default function App() {
       setCurrentTime(null);
       setBaseName((file.name || "transcript").replace(/\.[^.]+$/, ""));
 
-      // Create a local Object URL for immediate audio playback during work.
-      // For video sources the backend caches a converted MP3; once the
-      // response arrives we switch playback to that cached file (so it
-      // reflects the actual converted audio and survives history restore).
       clearAudioUrl();
       const url = URL.createObjectURL(file);
       setAudioUrl(url);
@@ -153,9 +146,9 @@ export default function App() {
         setHistoryId(rec.id);
         setError(null);
         setBaseName((rec.filename || "transcript").replace(/\.[^.]+$/, ""));
-        // History records can replay audio if a converted MP3 was cached.
         if (rec.audio_cache_name) setCacheAudioUrl(rec.audio_cache_name);
         else clearAudioUrl();
+        setHistoryOpen(false);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
@@ -190,7 +183,6 @@ export default function App() {
 
   const handleClearAudioCache = useCallback(async () => {
     await clearAudioCache();
-    // If the currently playing track was a cached MP3, drop it.
     clearAudioUrl();
     refreshAudioCache();
   }, [clearAudioUrl, refreshAudioCache]);
@@ -199,74 +191,130 @@ export default function App() {
     setSeekTo(time);
   }, []);
 
-  // Model switch handlers
-  const handleSwitchStart = useCallback(() => {
-    restartReadiness();
-  }, [restartReadiness]);
-
-  const handleSwitchDone = useCallback(() => {
-    // readiness polling will naturally pick up the new state
-  }, []);
-
-  // Show boot overlay during initial boot or model switching
   if (!ready || switching) {
     return <BootOverlay state={readiness} failed={failed} />;
   }
 
   const hasResult = segments.length > 0 || text.length > 0;
+  const progress = jobStatus?.progress ?? 0;
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <header className="border-b border-neutral-800 px-8 py-5">
-        <div className="flex items-baseline justify-between">
-          <h1 className="font-mono text-lg font-black tracking-tight">
-            ASR TRANSCRIPTION
-          </h1>
-          <span className="font-mono text-xs text-neutral-600">
-            Qwen3-ASR · CUDA
-          </span>
+    <div className="h-screen w-screen p-3 sm:p-4 lg:p-6 box-border">
+      <div className="glass flex flex-col h-full text-white overflow-hidden rounded-3xl">
+      {/* ── Top toolbar ─────────────────────────────────────────── */}
+      <header className="shrink-0 z-20 border-b border-white/10">
+        <div className="flex items-center gap-3 px-5 sm:px-8 py-3.5">
+          {/* Brand + model info */}
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="font-mono text-base font-black tracking-tight whitespace-nowrap">
+              ASR
+            </span>
+            <ModelInfo health={health} />
+          </div>
+
+          <div className="flex-1" />
+
+          {/* Action buttons */}
+          <button
+            onClick={() => setUploadOpen(true)}
+            disabled={working}
+            className="btn-primary"
+          >
+            <span className="hidden sm:inline">Upload</span>
+            <span className="sm:hidden">＋</span>
+          </button>
+          <button
+            onClick={() => setExportOpen(true)}
+            disabled={!hasResult}
+            className="btn-ghost"
+            title="Export"
+          >
+            <span className="hidden sm:inline">Export</span>
+            <span className="sm:hidden">⤓</span>
+          </button>
+          <button
+            onClick={() => setStatsOpen(true)}
+            disabled={!stats}
+            className="btn-ghost"
+            title="Statistics"
+          >
+            <span className="hidden sm:inline">Stats</span>
+            <span className="sm:hidden">▤</span>
+          </button>
+          <button
+            onClick={() => setHistoryOpen(true)}
+            className="btn-ghost"
+            title="History"
+          >
+            <span className="hidden sm:inline">History</span>
+            <span className="sm:hidden">☰</span>
+          </button>
         </div>
+
+        {/* Thin progress / error bar */}
+        {(working || error) && (
+          <div className="h-0.5 w-full bg-white/5 overflow-hidden">
+            <div
+              className={`h-full transition-all duration-500 ease-out ${
+                error ? "bg-red-500" : "bg-white animate-progress-glow"
+              }`}
+              style={{ width: `${error ? 100 : Math.max(2, progress)}%` }}
+            />
+          </div>
+        )}
       </header>
 
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-px bg-neutral-800">
-        {/* Left column: controls */}
-        <div className="bg-black flex flex-col gap-px overflow-y-auto">
+      {/* ── Main: wide transcript ──────────────────────────────── */}
+      <main className="flex-1 min-h-0 overflow-hidden">
+        {working && jobStatus?.message && (
+          <div className="px-5 sm:px-8 py-2 border-b border-white/8 font-mono text-xs text-white/60 animate-fade-in">
+            {jobStatus.message}
+          </div>
+        )}
+        {error && (
+          <div className="px-5 sm:px-8 py-3 border-b border-red-500/30 bg-red-500/10 animate-fade-in">
+            <p className="font-mono text-sm text-red-300 break-words">{error}</p>
+          </div>
+        )}
+        <div className="h-full overflow-hidden">
+          <TranscriptPanel
+            segments={segments}
+            text={text}
+            alignerUsed={stats?.aligner_used ?? false}
+            currentTime={currentTime}
+            onSeek={handleSeek}
+          />
+        </div>
+      </main>
+
+      {/* ── Bottom player bar ──────────────────────────────────── */}
+      {audioUrl && (
+        <footer className="shrink-0 border-t border-white/10">
+          <AudioPlayer
+            audioUrl={audioUrl}
+            onTimeUpdate={setCurrentTime}
+            seekTo={seekTo}
+          />
+        </footer>
+      )}
+      </div>
+
+      {/* ── Upload modal ───────────────────────────────────────── */}
+      {uploadOpen && (
+        <Overlay onClose={() => !working && setUploadOpen(false)} title="Upload audio or video">
           <UploadZone
             onTranscribe={handleTranscribe}
             disabled={working}
-            alignerAvailable={alignerAvailable}
+            alignerAvailable={health?.aligner_available ?? false}
+            compact
           />
-          {audioUrl && (
-            <AudioPlayer
-              audioUrl={audioUrl}
-              onTimeUpdate={setCurrentTime}
-              seekTo={seekTo}
-            />
-          )}
           {working && <ProgressBar status={jobStatus} />}
-          {error && (
-            <div className="border border-red-900 bg-black p-6 animate-fade-in">
-              <p className="font-mono text-xs uppercase tracking-widest text-red-500 mb-2">
-                Error
-              </p>
-              <p className="font-mono text-xs text-neutral-300 break-words">
-                {error}
-              </p>
-            </div>
-          )}
-          <ModelPanel
-            switching={switching}
-            onSwitchStart={handleSwitchStart}
-            onSwitchDone={handleSwitchDone}
-          />
-          <StatsPanel stats={stats} />
-          <ExportBar
-            text={text}
-            segments={segments}
-            stats={stats}
-            baseName={baseName}
-            disabled={!hasResult}
-          />
+        </Overlay>
+      )}
+
+      {/* ── History drawer ─────────────────────────────────────── */}
+      {historyOpen && (
+        <Drawer side="left" onClose={() => setHistoryOpen(false)} title="History">
           <HistoryPanel
             items={historyItems}
             activeId={historyId}
@@ -276,21 +324,104 @@ export default function App() {
             onClear={handleClear}
             onClearAudioCache={handleClearAudioCache}
           />
-        </div>
+        </Drawer>
+      )}
 
-        {/* Right column: transcript */}
-        <div className="bg-black p-px">
-          <div className="h-[calc(100vh-73px)]">
-            <TranscriptPanel
-              segments={segments}
-              text={text}
-              alignerUsed={stats?.aligner_used ?? false}
-              currentTime={currentTime}
-              onSeek={handleSeek}
-            />
-          </div>
+      {/* ── Export dropdown ────────────────────────────────────── */}
+      {exportOpen && (
+        <Overlay onClose={() => setExportOpen(false)} title="Export transcript">
+          <ExportBar
+            text={text}
+            segments={segments}
+            stats={stats}
+            baseName={baseName}
+            disabled={!hasResult}
+          />
+        </Overlay>
+      )}
+
+      {/* ── Statistics overlay ─────────────────────────────────── */}
+      {statsOpen && (
+        <Overlay onClose={() => setStatsOpen(false)} title="Statistics">
+          <StatsPanel stats={stats} />
+        </Overlay>
+      )}
+    </div>
+  );
+}
+
+/* ── Reusable overlay (centered modal) ─────────────────────────── */
+function Overlay({
+  children,
+  onClose,
+  title,
+}: {
+  children: React.ReactNode;
+  onClose: () => void;
+  title: string;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-md animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="glass-strong w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-3xl animate-slide-up"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/10 sticky top-0 z-10">
+          <h2 className="font-mono text-[13px] uppercase tracking-widest text-white/60">
+            {title}
+          </h2>
+          <button
+            onClick={onClose}
+            className="font-mono text-base text-white/50 hover:text-white transition-colors"
+          >
+            ✕
+          </button>
         </div>
-      </main>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Reusable drawer (side panel) ──────────────────────────────── */
+function Drawer({
+  children,
+  onClose,
+  title,
+  side = "left",
+}: {
+  children: React.ReactNode;
+  onClose: () => void;
+  title: string;
+  side?: "left" | "right";
+}) {
+  const sideClass =
+    side === "left"
+      ? "left-0 animate-slide-in-left"
+      : "right-0 animate-slide-in-right";
+  return (
+    <div className="fixed inset-0 z-50 animate-fade-in" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-md" />
+      <div
+        className={`glass-strong absolute top-0 ${sideClass} h-full w-full max-w-sm rounded-r-3xl overflow-y-auto`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/10 sticky top-0 z-10">
+          <h2 className="font-mono text-[13px] uppercase tracking-widest text-white/60">
+            {title}
+          </h2>
+          <button
+            onClick={onClose}
+            className="font-mono text-base text-white/50 hover:text-white transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
     </div>
   );
 }

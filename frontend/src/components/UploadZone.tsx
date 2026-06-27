@@ -19,10 +19,12 @@ interface Props {
   onTranscribe: (file: File, align: boolean) => void;
   disabled: boolean;
   alignerAvailable: boolean;
+  /** Tighter layout for use inside a modal. */
+  compact?: boolean;
 }
 
 /** Drag-and-drop / click-to-select audio/video upload with an optional alignment toggle. */
-export function UploadZone({ onTranscribe, disabled, alignerAvailable }: Props) {
+export function UploadZone({ onTranscribe, disabled, alignerAvailable, compact }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [align, setAlign] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -36,12 +38,10 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable }: Props) 
     if (file && !disabled) onTranscribe(file, align);
   };
 
-  return (
-    <div className="border border-neutral-800 p-6">
-      <h2 className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-4">
-        Upload Audio
-      </h2>
+  const padY = compact ? "py-8" : "py-10";
 
+  return (
+    <div>
       <div
         onClick={() => !disabled && inputRef.current?.click()}
         onDragOver={(e) => {
@@ -55,9 +55,11 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable }: Props) 
           if (disabled) return;
           pick(e.dataTransfer.files[0] ?? null);
         }}
-        className={`flex flex-col items-center justify-center cursor-pointer border-2 border-dashed py-10 px-4 transition-colors ${
-          dragging ? "border-white bg-neutral-900" : "border-neutral-700"
-        } ${disabled ? "opacity-40 cursor-not-allowed" : "hover:border-neutral-500"}`}
+        className={`flex flex-col items-center justify-center cursor-pointer border-2 border-dashed ${padY} px-4 rounded-2xl transition-all duration-200 ${
+          dragging
+            ? "border-white/60 bg-white/15 scale-[1.01]"
+            : "border-white/20 bg-white/5 backdrop-blur-md"
+        } ${disabled ? "opacity-40 cursor-not-allowed" : "hover:border-white/40 hover:bg-white/10"}`}
       >
         <input
           ref={inputRef}
@@ -67,23 +69,23 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable }: Props) 
           onChange={(e) => pick(e.target.files?.[0] ?? null)}
         />
         {file ? (
-          <div className="text-center">
-            <p className="font-mono text-sm font-bold break-all">{file.name}</p>
-            <p className="font-mono text-xs text-neutral-500 mt-1">
+          <div className="text-center animate-fade-in">
+            <p className="font-mono text-sm font-bold break-all text-white">{file.name}</p>
+            <p className="font-mono text-xs text-white/50 mt-1">
               {(file.size / 1048576).toFixed(1)} MB
             </p>
             {isVideoFile(file) && (
-              <p className="font-mono text-[10px] uppercase tracking-widest text-amber-600 mt-2">
+              <p className="font-mono text-[10px] uppercase tracking-widest text-amber-400 mt-2">
                 Video → MP3 (auto bitrate)
               </p>
             )}
           </div>
         ) : (
           <div className="text-center">
-            <p className="font-mono text-sm text-neutral-300">
+            <p className="font-sans text-sm text-white/80">
               Drag &amp; drop audio or video here
             </p>
-            <p className="font-mono text-xs text-neutral-600 mt-1">
+            <p className="font-mono text-xs text-white/40 mt-1">
               WAV · MP3 · FLAC · OGG · M4A · MP4 · MKV · MOV ...
             </p>
           </div>
@@ -91,7 +93,7 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable }: Props) 
       </div>
 
       <label
-        className={`flex items-center gap-3 mt-4 font-mono text-sm ${
+        className={`flex items-center gap-3 mt-4 font-mono text-sm text-white/80 ${
           !alignerAvailable || disabled ? "opacity-40" : "cursor-pointer"
         }`}
       >
@@ -105,7 +107,7 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable }: Props) 
         <span>
           Word-level timestamps
           {!alignerAvailable && (
-            <span className="text-neutral-600"> (aligner unavailable)</span>
+            <span className="text-white/40"> (aligner unavailable)</span>
           )}
         </span>
       </label>
@@ -113,7 +115,7 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable }: Props) 
       <button
         onClick={submit}
         disabled={!file || disabled}
-        className="w-full mt-4 py-3 font-mono text-sm font-bold uppercase tracking-widest bg-white text-black disabled:bg-neutral-800 disabled:text-neutral-600 disabled:cursor-not-allowed hover:bg-neutral-200 transition-colors"
+        className="btn-primary w-full mt-4 py-3"
       >
         Transcribe
       </button>

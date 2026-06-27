@@ -108,6 +108,10 @@ KV_QUANT = TUNING["kv_quant"]
 DEFAULT_NGL = TUNING["n_gpu_layers"]
 DEFAULT_THREADS = TUNING["threads"]
 CHUNK_SECONDS = float(os.environ.get("CHUNK_SECONDS", "25"))
+# Overlap between adjacent chunks (seconds). Lets the ASR see context across a
+# boundary so words straddling the cut are recognized correctly; the overlapped
+# portion is dropped during absorption to avoid duplication. 0 = contiguous.
+CHUNK_OVERLAP = float(os.environ.get("CHUNK_OVERLAP", "1.5"))
 
 # Aligner backend: "cpu" (CrispASR via ctypes, no extra deps) or
 # "gpu" (official qwen-asr, unloads ASR from VRAM first then loads aligner).
@@ -460,21 +464,104 @@ async def models_switch(req: dict = Body(default={})):
         return {"error": "switch_failed", "detail": str(e)}
 
 
-async def _transcribe_chunk(client: httpx.AsyncClient, chunk_path: Path) -> dict:
+async def _transcribe_chunk(
+    client: httpx.AsyncClient,
+    chunk_path: Path,
+    initial_prompt: str | None = None,
+) -> dict:
     with chunk_path.open("rb") as fh:
         audio_bytes = fh.read()
+    data: dict[str, str] = {"response_format": "json"}
+    # Greedy decoding eliminates sampling noise (lowers WER at zero cost).
+    data["temperature"] = str(ASR_TEMPERATURE)
+    if ASR_LANGUAGE:
+        data["language"] = ASR_LANGUAGE
+    # Feed the previous chunk's text as context so the model doesn't lose
+    # continuity across a chunk boundary — directly attacks boundary errors.
+    if initial_prompt:
+        data["initial_prompt"] = initial_prompt[:ASR_PROMPT_MAX_CHARS]
     resp = await client.post(
         f"{runner.base_url}/v1/audio/transcriptions",
         files={"file": (chunk_path.name, audio_bytes, "audio/wav")},
-        data={"response_format": "json"},
+        data=data,
     )
     if resp.status_code != 200:
         raise RuntimeError(f"llama-server {resp.status_code}: {resp.text[:500]}")
-    data = resp.json()
-    if "error" in data:
-        msg = data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"])
+    rdata = resp.json()
+    if "error" in rdata:
+        msg = rdata["error"].get("message", str(rdata["error"])) if isinstance(rdata["error"], dict) else str(rdata["error"])
         raise RuntimeError(msg)
-    return data
+    return rdata
+
+
+# Max ASR retries before giving up on a chunk (sampling randomness means a
+# template-leakage 500 usually succeeds on retry).
+ASR_MAX_RETRIES = int(os.environ.get("ASR_MAX_RETRIES", "2"))
+# Re-split a persistently-failing chunk into halves before giving up.
+ASR_RESPLIT = os.environ.get("ASR_RESPLIT", "1") == "1"
+# Decode params (WER/CER levers).
+ASR_TEMPERATURE = float(os.environ.get("ASR_TEMPERATURE", "0"))
+ASR_LANGUAGE = os.environ.get("ASR_LANGUAGE", "").strip()
+ASR_PROMPT_MAX_CHARS = int(os.environ.get("ASR_PROMPT_MAX_CHARS", "200"))
+
+
+async def _transcribe_chunk_retry(
+    client: httpx.AsyncClient,
+    chunk_path: Path,
+    initial_prompt: str | None = None,
+    max_retries: int = ASR_MAX_RETRIES,
+) -> dict:
+    """Transcribe a chunk with bounded retries on failure."""
+    last_err: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await _transcribe_chunk(client, chunk_path, initial_prompt)
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries:
+                await asyncio.sleep(0.5 * (attempt + 1))
+    assert last_err is not None
+    raise last_err
+
+
+def _resplit_chunk(chunk_path: Path, out_dir: Path) -> list[tuple[Path, float]]:
+    """Split a failing chunk WAV into two halves for a second attempt.
+
+    Re-cutting at a different boundary often sidesteps the content that
+    triggered the ASR parse failure. Returns [(half_path, local_offset), ...]
+    where local_offset is 0.0 for the first half and half-duration for the
+    second — callers add this to the chunk's absolute start_offset.
+    """
+    dur = probe_duration(chunk_path)
+    if dur <= 1.0:
+        return []  # too short to split meaningfully
+    half = dur / 2.0
+    out_dir.mkdir(parents=True, exist_ok=True)
+    halves: list[tuple[Path, float]] = []
+    ffmpeg = None
+    try:
+        from .audio_chunk import _resolve_ffmpeg
+        ffmpeg = _resolve_ffmpeg("ffmpeg")
+    except Exception:
+        return []
+
+    for i, start in enumerate((0.0, half)):
+        out = out_dir / f"{chunk_path.stem}_h{i}.wav"
+        cmd = [
+            ffmpeg, "-y", "-loglevel", "error",
+            "-ss", f"{start:.3f}", "-t", f"{half:.3f}",
+            "-i", str(chunk_path),
+            "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+            str(out),
+        ]
+        try:
+            import subprocess
+            subprocess.run(cmd, check=True, capture_output=True)
+            if out.stat().st_size > 44:
+                halves.append((out, start))
+        except Exception:
+            pass
+    return halves
 
 
 def _gpu_swap_align(
@@ -652,7 +739,7 @@ async def transcribe(
         stats["audio_duration"] = round(duration, 3)
 
         try:
-            chunks = split_audio(src_path, tmp_dir / "chunks", CHUNK_SECONDS)
+            chunks = split_audio(src_path, tmp_dir / "chunks", CHUNK_SECONDS, CHUNK_OVERLAP)
         except Exception as e:
             set_job("error", 0, f"Split failed: {e}")
             return {"error": "split_failed", "detail": str(e)}
@@ -685,44 +772,117 @@ async def transcribe(
         t_align_start = time.monotonic() if (do_align_cpu or gpu_swap) else None
 
         # ── Phase 1: ASR (+ pipelined alignment submission, CPU only) ──
+        # Per-chunk failure handling is three-tier:
+        #   1. retry the same chunk (ASR sampling randomness → 500s usually
+        #      succeed on retry),
+        #   2. re-split the chunk into halves and try each (sidesteps the
+        #      content that triggered the parse failure),
+        #   3. give up — record the failure and skip (keeps the rest of the
+        #      transcription intact).
         t_asr_start = time.monotonic()
+        chunk_failures: list[str] = []  # error messages per failed chunk
+        resplit_dir = tmp_dir / "resplit"
+        # Running context for initial_prompt: the tail of the last successful
+        # chunk's text, fed to the next chunk to preserve cross-boundary continuity.
+        last_chunk_text = ""
+
+        def _absorb(
+            data: dict, wav_path: Path, start_offset: float, prev_end: float,
+        ) -> str:
+            """Fold one successful ASR result into accumulators + align queue.
+
+            ``prev_end`` is the absolute time from which this chunk is
+            responsible for output. Segments whose (shifted) start falls before
+            ``prev_end`` lie in the overlap with the previous chunk and are
+            dropped to avoid duplicating content. Returns the chunk's cleaned
+            text (used to seed the next chunk's initial_prompt).
+            """
+            raw_segments = data.get("segments") or []
+            raw_segments = clean_segments(raw_segments)
+            # Raw (unshifted) segments feed resegment_words later.
+            if raw_segments:
+                asr_segments_raw.extend(raw_segments)
+
+            kept: list[dict] = []
+            for seg in raw_segments:
+                shifted = _shift_segments([seg], start_offset)[0]
+                # Drop segments entirely in the overlap region (before prev_end).
+                # A straddler whose end crosses prev_end is trimmed to prev_end
+                # so its content is kept without duplicating the previous chunk.
+                if shifted.get("start", 0.0) < prev_end - 1e-3:
+                    if shifted.get("end", 0.0) > prev_end:
+                        shifted["start"] = prev_end
+                        kept.append(shifted)
+                    continue
+                kept.append(shifted)
+
+            if kept:
+                all_segments.extend(kept)
+
+            # Build text from kept segments when available (consistent with
+            # the dedup'd segments), else fall back to the ASR text field.
+            if kept:
+                text = " ".join(s.get("text", "") for s in kept).strip()
+            else:
+                text = (data.get("text") or "").strip()
+            text = clean_asr_text(text)
+
+            if text:
+                all_text_parts.append(text)
+                if do_align_cpu and align_pool is not None:
+                    align_futures.append(
+                        align_pool.submit(aligner.align_chunk, wav_path, text, start_offset)
+                    )
+                elif gpu_swap:
+                    gpu_align_jobs.append((wav_path, text, start_offset))
+            return text
+
         async with httpx.AsyncClient(timeout=600.0) as client:
-            for i, (chunk_path, start_offset) in enumerate(chunks, 1):
+            for i, entry in enumerate(chunks, 1):
+                # chunks are (chunk_path, start_offset, prev_end)
+                chunk_path, start_offset, prev_end = entry
                 progress = 10 + int(70 * (i - 1) / total)
                 set_job(
                     "transcribing",
                     progress,
                     f"Transcribing chunk {i}/{total} ({start_offset:.1f}s)...",
                 )
-                try:
-                    data = await _transcribe_chunk(client, chunk_path)
-                except httpx.ReadTimeout:
-                    if align_pool:
-                        align_pool.shutdown(wait=False, cancel_futures=True)
-                    set_job("error", 0, f"Chunk {i} timed out")
-                    return {"error": "timeout", "detail": f"Chunk {i}/{total} timed out after 600s"}
-                except Exception as e:
-                    if align_pool:
-                        align_pool.shutdown(wait=False, cancel_futures=True)
-                    logger.error("Chunk %d failed: %s", i, e)
-                    set_job("error", 0, f"Chunk {i} failed: {e}")
-                    return {"error": "chunk_failed", "detail": str(e)}
+                prompt = last_chunk_text or None
 
-                text = (data.get("text") or "").strip()
-                text = clean_asr_text(text)
-                segments = data.get("segments") or []
-                segments = clean_segments(segments)
-                if segments:
-                    asr_segments_raw.extend(segments)
-                    all_segments.extend(_shift_segments(segments, start_offset))
-                if text:
-                    all_text_parts.append(text)
-                    if do_align_cpu and align_pool is not None:
-                        align_futures.append(
-                            align_pool.submit(aligner.align_chunk, chunk_path, text, start_offset)
-                        )
-                    elif gpu_swap:
-                        gpu_align_jobs.append((chunk_path, text, start_offset))
+                # ── Tier 1: retry ─────────────────────────────────────────
+                try:
+                    data = await _transcribe_chunk_retry(client, chunk_path, prompt)
+                    last_chunk_text = _absorb(data, chunk_path, start_offset, prev_end)
+                    continue
+                except Exception as e:
+                    tier1_err = str(e)
+                    logger.warning("Chunk %d/%d failed after retries: %s", i, total, tier1_err)
+
+                # ── Tier 2: re-split into halves, try each ────────────────
+                if ASR_RESPLIT:
+                    halves = _resplit_chunk(chunk_path, resplit_dir)
+                    if halves:
+                        logger.info("Chunk %d/%d: re-splitting into %d halves", i, total, len(halves))
+                        half_ok = 0
+                        half_texts: list[str] = []
+                        for half_path, local_off in halves:
+                            try:
+                                h_data = await _transcribe_chunk_retry(client, half_path, prompt)
+                                ht = _absorb(h_data, half_path, start_offset + local_off, start_offset + local_off)
+                                half_texts.append(ht)
+                                half_ok += 1
+                            except Exception as he:
+                                logger.warning(
+                                    "Chunk %d/%d half (off %.1fs) failed: %s",
+                                    i, total, local_off, he,
+                                )
+                        if half_ok > 0:
+                            last_chunk_text = " ".join(t for t in half_texts if t)
+                            continue  # at least one half succeeded
+                # ── Tier 3: give up, skip ─────────────────────────────────
+                logger.warning("Chunk %d/%d skipped after all recovery attempts", i, total)
+                chunk_failures.append(f"chunk {i} (@{start_offset:.0f}s): {tier1_err}")
+                # Don't carry a failed chunk's text forward as context.
 
         stats["asr_time"] = round(time.monotonic() - t_asr_start, 3)
 
@@ -731,8 +891,19 @@ async def transcribe(
         if not merged_text and not all_segments:
             if align_pool:
                 align_pool.shutdown(wait=False, cancel_futures=True)
+            detail = "All chunks returned empty"
+            if chunk_failures:
+                detail += f" ({len(chunk_failures)} failed: {chunk_failures[0]})"
             set_job("error", 0, "No transcription text returned")
-            return {"error": "empty_result", "detail": "All chunks returned empty"}
+            return {"error": "empty_result", "detail": detail}
+
+        if chunk_failures:
+            logger.warning(
+                "Transcription completed with %d/%d chunk failures: %s",
+                len(chunk_failures), total, "; ".join(chunk_failures[:3]),
+            )
+            stats["chunk_failures"] = len(chunk_failures)
+            stats["chunk_failure_details"] = chunk_failures
 
         stats["char_count"] = len(merged_text)
         stats["segment_count"] = len(all_segments)
@@ -839,7 +1010,7 @@ async def align_standalone(
     try:
         chunks = split_audio(src_path, tmp_dir / "chunks", CHUNK_SECONDS)
         word_segments: list[dict] = []
-        for chunk_path, start_offset in chunks:
+        for chunk_path, start_offset, _prev_end in chunks:
             words = aligner.align_chunk(chunk_path, text, start_offset)
             word_segments.extend(words)
         return {"words": word_segments, "count": len(word_segments)}

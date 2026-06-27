@@ -14,11 +14,11 @@ interface Stat {
 export function StatsPanel({ stats }: Props) {
   if (!stats) {
     return (
-      <div className="border border-neutral-800 p-6">
-        <h2 className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-4">
+      <div>
+        <h2 className="font-mono text-xs uppercase tracking-widest text-white/45 mb-4">
           Statistics
         </h2>
-        <p className="font-mono text-sm text-neutral-600">
+        <p className="font-mono text-sm text-white/40">
           Awaiting transcription.
         </p>
       </div>
@@ -47,20 +47,20 @@ export function StatsPanel({ stats }: Props) {
   ];
 
   return (
-    <div className="border border-neutral-800 p-6 animate-fade-in">
-      <h2 className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-4">
+    <div className="animate-fade-in">
+      <h2 className="font-mono text-xs uppercase tracking-widest text-white/45 mb-4">
         Statistics
       </h2>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
         {rows.map((row) => (
           <div
             key={row.label}
-            className="flex flex-col font-mono text-xs"
+            className="flex flex-col font-mono text-xs p-3 rounded-xl bg-white/5 border border-white/8"
           >
-            <dt className="text-neutral-600 uppercase tracking-wider text-[10px]">
+            <dt className="text-white/40 uppercase tracking-wider text-[10px]">
               {row.label}
             </dt>
-            <dd className="text-neutral-100 break-all">{row.value}</dd>
+            <dd className="text-white/95 break-all mt-0.5">{row.value}</dd>
           </div>
         ))}
       </dl>
