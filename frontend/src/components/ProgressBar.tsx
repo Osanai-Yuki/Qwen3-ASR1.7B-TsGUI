@@ -12,29 +12,29 @@ export function ProgressBar({ status }: Props) {
   const isError = status.status === "error";
 
   return (
-    <div className="border border-neutral-800 p-6 animate-fade-in">
+    <div className="mt-4 p-4 rounded-2xl bg-white/5 border border-white/8 animate-fade-in">
       <div className="flex items-baseline justify-between mb-3">
         <span
           className={`font-mono text-xs uppercase tracking-widest ${
-            isError ? "text-red-500" : "text-neutral-500"
+            isError ? "text-red-400" : "text-white/55"
           }`}
         >
           {isError ? "Error" : status.status}
         </span>
-        <span className="font-mono text-xs text-neutral-500 tabular-nums">
+        <span className="font-mono text-xs text-white/55 tabular-nums">
           {progress}%
         </span>
       </div>
-      <div className="h-1 w-full bg-neutral-900 overflow-hidden">
+      <div className="h-1.5 w-full bg-white/8 overflow-hidden rounded-full">
         <div
-          className={`h-full transition-all duration-500 ease-out ${
-            isError ? "bg-red-600" : "bg-white animate-progress-glow"
+          className={`h-full transition-all duration-500 ease-out rounded-full ${
+            isError ? "bg-red-500" : "bg-white animate-progress-glow"
           }`}
           style={{ width: `${progress}%` }}
         />
       </div>
       {status.message && (
-        <p className="mt-3 font-mono text-xs text-neutral-400">
+        <p className="mt-3 font-mono text-xs text-white/55">
           {status.message}
         </p>
       )}
