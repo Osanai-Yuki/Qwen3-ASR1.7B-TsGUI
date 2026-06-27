@@ -44,12 +44,28 @@ def probe_duration(input_path: Path) -> float:
     return float(data.get("format", {}).get("duration", 0.0))
 
 
-def split_audio(input_path: Path, out_dir: Path, chunk_seconds: float) -> list[tuple[Path, float]]:
-    """Split audio into mono 16 kHz wav chunks. Returns [(chunk_path, start_seconds), ...].
+def split_audio(
+    input_path: Path,
+    out_dir: Path,
+    chunk_seconds: float,
+    overlap: float = 0.0,
+) -> list[tuple[Path, float, float]]:
+    """Split audio into mono 16 kHz wav chunks.
 
-    Chunks are extracted in parallel via a thread pool — each ffmpeg invocation
-    is independent and I/O-bound, so concurrency speeds up the split stage
-    without changing the output. Results are returned in chronological order.
+    Returns ``[(chunk_path, start_offset, prev_end), ...]`` where:
+    - ``start_offset`` is the chunk's absolute start in the source audio,
+    - ``prev_end`` is the absolute time from which this chunk is *responsible*
+      for output (the previous chunk's ``start_offset``; 0.0 for the first).
+
+    With ``overlap > 0`` adjacent chunks overlap by that many seconds (each
+    chunk is still ``chunk_seconds`` long, but the step is
+    ``chunk_seconds - overlap``).  The overlap lets the ASR see context across
+    the boundary; callers drop segments whose timestamps fall in the overlap
+    (before ``prev_end``) to avoid duplicating content.  ``overlap=0``
+    reproduces the original contiguous split.
+
+    Extraction runs in a thread pool — each ffmpeg invocation is independent
+    and I/O-bound.  Results are returned in chronological order.
     """
     ffmpeg = _resolve_ffmpeg("ffmpeg")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -58,17 +74,23 @@ def split_audio(input_path: Path, out_dir: Path, chunk_seconds: float) -> list[t
     if duration <= 0:
         raise RuntimeError("Could not determine audio duration")
 
-    # Build the extraction plan first (deterministic order).
-    plan: list[tuple[int, float]] = []
+    # Clamp overlap so the step stays positive and meaningful.
+    overlap = max(0.0, min(overlap, chunk_seconds * 0.4))
+    step = chunk_seconds - overlap
+
+    # Build the extraction plan: (idx, start_offset, prev_end).
+    plan: list[tuple[int, float, float]] = []
     start = 0.0
+    prev_end = 0.0
     idx = 0
     while start < duration:
-        plan.append((idx, start))
-        start += chunk_seconds
+        plan.append((idx, start, prev_end))
+        prev_end = start  # next chunk is responsible from where this one began
+        start += step
         idx += 1
 
-    def extract(item: tuple[int, float]) -> tuple[Path, float] | None:
-        i, s = item
+    def extract(item: tuple[int, float, float]) -> tuple[Path, float, float] | None:
+        i, s, pe = item
         out_path = out_dir / f"chunk_{i:04d}.wav"
         cmd = [
             ffmpeg,
@@ -84,11 +106,11 @@ def split_audio(input_path: Path, out_dir: Path, chunk_seconds: float) -> list[t
         ]
         subprocess.run(cmd, check=True, capture_output=True)
         if out_path.stat().st_size > 44:
-            return (out_path, s)
+            return (out_path, s, pe)
         return None
 
     workers = max(1, min(len(plan), 8))
-    chunks: list[tuple[Path, float]] = []
+    chunks: list[tuple[Path, float, float]] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         # map preserves input order; filter empty results.
         for res in pool.map(extract, plan):
