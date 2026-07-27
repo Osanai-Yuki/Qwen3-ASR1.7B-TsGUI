@@ -45,6 +45,8 @@ class LlamaRunner:
         self._stderr_lines: list[str] = []
         self._stderr_lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
+        # Serializes start()/stop() across threads (RLock: start() calls stop()).
+        self._start_lock = threading.RLock()
 
     @property
     def base_url(self) -> str:
@@ -112,34 +114,44 @@ class LlamaRunner:
 
         If a process is already running, it is stopped first.
         """
-        self.stop()
-        self._wait_port_free(timeout=15.0)
+        with self._start_lock:
+            # Serialize start/stop across threads: a model switch and the boot
+            # sequence can both call start(); without the lock they'd race on
+            # self.process and spawn two llama-server instances on one port.
+            # RLock because start() calls stop() (reentrant).
+            self.stop()
+            self._wait_port_free(timeout=15.0)
 
-        self._model_path = Path(model_path)
-        self._mmproj_path = Path(mmproj_path) if mmproj_path else None
-        self._ctx_size = ctx_size
-        self._kv_quant = kv_quant
-        self._n_gpu_layers = n_gpu_layers
-        self._threads = threads
-        self._batch_size = batch_size
-        self._ubatch_size = ubatch_size
-        self._flash_attn = flash_attn
-        self._mmproj_offload = mmproj_offload
-        self._extra_args = extra_args or []
-        self.current_model = model_name or self._model_path.stem
+            self._model_path = Path(model_path)
+            self._mmproj_path = Path(mmproj_path) if mmproj_path else None
+            self._ctx_size = ctx_size
+            self._kv_quant = kv_quant
+            self._n_gpu_layers = n_gpu_layers
+            self._threads = threads
+            self._batch_size = batch_size
+            self._ubatch_size = ubatch_size
+            self._flash_attn = flash_attn
+            self._mmproj_offload = mmproj_offload
+            self._extra_args = extra_args or []
+            self.current_model = model_name or self._model_path.stem
 
-        with self._stderr_lock:
-            self._stderr_lines = []
+            with self._stderr_lock:
+                self._stderr_lines = []
 
-        logger.info("Starting llama-server with model=%s", self.current_model)
-        self.process = subprocess.Popen(
-            self.build_cmd(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        self._start_stderr_reader()
-        self._wait_until_ready(timeout)
-        logger.info("llama-server ready (model=%s)", self.current_model)
+            logger.info("Starting llama-server with model=%s", self.current_model)
+            self.process = subprocess.Popen(
+                self.build_cmd(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            self._start_stderr_reader()
+            try:
+                self._wait_until_ready(timeout)
+            except Exception:
+                logger.exception("llama-server failed to start; terminating leaked process")
+                self.stop()
+                raise
+            logger.info("llama-server ready (model=%s)", self.current_model)
 
     def _start_stderr_reader(self) -> None:
         """Background thread that continuously drains stderr so the pipe
@@ -203,14 +215,15 @@ class LlamaRunner:
             time.sleep(0.3)
 
     def stop(self) -> None:
-        if self.process and self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=5)
-        self.process = None
+        with self._start_lock:
+            if self.process and self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+            self.process = None
 
     def is_alive(self) -> bool:
         if not self.process:

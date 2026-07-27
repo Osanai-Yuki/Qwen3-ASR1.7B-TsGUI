@@ -140,6 +140,10 @@ def _align_words(
     """Call CrispASR's align_words_abi via ctypes."""
     if not aligner_model or not transcript or pcm is None or len(pcm) == 0:
         return []
+    # NUL bytes would truncate the C string passed via c_char_p.
+    if "\x00" in aligner_model or "\x00" in transcript:
+        logger.warning("NUL byte in alignment input; rejecting unsafe request")
+        return []
 
     lib = _load_lib()
     if lib is None:

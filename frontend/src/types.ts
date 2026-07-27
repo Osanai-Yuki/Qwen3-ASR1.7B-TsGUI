@@ -77,6 +77,8 @@ export interface TranscribeResponse {
   segments: Segment[];
   stats: Stats;
   history_id: string | null;
+  /** True when the user cancelled mid-transcription; text/segments are partial. */
+  cancelled?: boolean;
 }
 
 /** Generic error body returned by failing endpoints. */
@@ -115,12 +117,12 @@ export interface HistoryRecord {
   audio_cache_name: string | null;
 }
 
-/** A discovered ASR model in models/asr/. Shape from _scan_asr_models. */
+/** A discovered ASR model in models/asr/. Shape from _scan_asr_models.
+ *  Absolute paths are intentionally NOT exposed (server re-resolves by name). */
 export interface ModelInfo {
   name: string;
-  path: string;
   size: number;
-  mmproj: string | null;
+  has_mmproj: boolean;
 }
 
 /** GET /api/models */

@@ -49,6 +49,15 @@ export async function transcribe(
   return (await res.json()) as TranscribeResponse | ApiError;
 }
 
+/** POST /api/abort - request cancellation of the in-flight transcription.
+ * The backend stops at the next chunk boundary and resolves /api/transcribe
+ * with the partial result (cancelled: true); the client awaits that response
+ * rather than aborting the fetch, so partial work is preserved. */
+export async function abortJob(): Promise<{ ok: boolean }> {
+  const res = await fetch("/api/abort", { method: "POST" });
+  return (await res.json()) as { ok: boolean };
+}
+
 /** POST /api/align — standalone forced alignment (audio + text). */
 export async function alignStandalone(
   file: File,

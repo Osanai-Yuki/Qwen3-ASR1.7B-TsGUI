@@ -5,6 +5,7 @@ Qwen3-ForcedAligner-0.6B model loaded locally and kept in GPU memory
 across chunks.  Requires ``torch``, ``transformers``, and ``qwen-asr``
 in the environment.
 """
+import importlib.util
 import logging
 import os
 from pathlib import Path
@@ -33,11 +34,15 @@ GPU_ALIGNER_MODEL_PATH = os.environ.get(
 )
 
 
-def _gpu_aligner_available() -> bool:
-    """Check whether the qwen-asr package *and* the local model are present."""
-    try:
-        import qwen_asr  # noqa: F401
-    except ImportError:
+def gpu_aligner_available() -> bool:
+    """Check whether the qwen-asr package *and* the local model are present.
+
+    Uses ``find_spec`` instead of a real import: importing qwen_asr pulls in
+    the whole torch/transformers chain (10-30 s), which would stall the boot
+    thread just to probe availability. The heavy import is deferred to
+    ``GPUAligner.load()`` on the first alignment call.
+    """
+    if importlib.util.find_spec("qwen_asr") is None:
         return False
     return Path(GPU_ALIGNER_MODEL_PATH).is_dir()
 
@@ -61,7 +66,7 @@ class GPUAligner:
 
     @property
     def available(self) -> bool:
-        return _gpu_aligner_available()
+        return gpu_aligner_available()
 
     def load(self) -> None:
         """Import dependencies and load the model onto GPU.

@@ -56,7 +56,10 @@ export function TranscriptPanel({
     const el = listRef.current;
     if (!el) return;
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (scrollTimer.current !== null) window.clearTimeout(scrollTimer.current);
+    };
   }, [onScroll]);
 
   // Auto-scroll on currentTime change — but only when the user is not manually
@@ -74,10 +77,19 @@ export function TranscriptPanel({
     }
   }, [currentTime, scrollActiveIntoView]);
 
-  const activeIndex =
-    currentTime !== null
-      ? segments.findIndex((s) => currentTime >= s.start && currentTime < s.end)
-      : -1;
+  // Segments are sorted by start; the active line is the last one whose start
+  // has been reached. Using start<=time (not start<=time<end) keeps a line
+  // highlighted through gaps between segments instead of dropping the
+  // highlight whenever playback sits in a pause between lines.
+  const activeIndex = (() => {
+    if (currentTime === null) return -1;
+    let idx = -1;
+    for (let i = 0; i < segments.length; i++) {
+      if (segments[i].start <= currentTime) idx = i;
+      else break;
+    }
+    return idx;
+  })();
 
   return (
     <div className="flex flex-col h-full min-h-0">

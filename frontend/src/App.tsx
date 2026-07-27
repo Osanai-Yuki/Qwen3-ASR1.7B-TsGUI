@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  abortJob,
   clearAudioCache,
   clearHistory,
   deleteHistory,
@@ -30,11 +31,12 @@ import { TranscriptPanel } from "./components/TranscriptPanel";
 import { UploadZone } from "./components/UploadZone";
 
 export default function App() {
-  const { state: readiness, ready, switching, failed } = useReadiness();
+  const { state: readiness, ready, switching, failed, restart } = useReadiness();
   const [health, setHealth] = useState<HealthResponse | null>(null);
 
   // Working state
   const [working, setWorking] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const { status: jobStatus } = useJobStatus(working);
 
   // Result state
@@ -47,6 +49,7 @@ export default function App() {
 
   // Audio playback state
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const audioUrlRef = useRef(audioUrl);
   const [currentTime, setCurrentTime] = useState<number | null>(null);
   const [seekTo, setSeekTo] = useState<number | null>(null);
 
@@ -86,17 +89,23 @@ export default function App() {
   }, []);
 
   const setCacheAudioUrl = useCallback((cacheName: string) => {
+    if (!/^[A-Za-z0-9._-]+$/.test(cacheName)) {
+      clearAudioUrl();
+      setError("Invalid audio cache name");
+      return;
+    }
     setAudioUrl((prev) => {
       if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
       return `/api/audio-cache/${encodeURIComponent(cacheName)}`;
     });
     setCurrentTime(null);
-  }, []);
+  }, [clearAudioUrl]);
 
   const handleTranscribe = useCallback(
     async (file: File, align: boolean) => {
       setUploadOpen(false);
       setWorking(true);
+      setCancelling(false);
       setError(null);
       setText("");
       setSegments([]);
@@ -120,6 +129,10 @@ export default function App() {
           setHistoryId(res.history_id);
           const cacheName = res.stats?.audio_cache_name ?? null;
           if (cacheName) setCacheAudioUrl(cacheName);
+          // Backend stopped at a chunk boundary and kept the partial transcript.
+          if (res.cancelled) {
+            setError("Transcription cancelled — showing partial result.");
+          }
           refreshHistory();
           refreshAudioCache();
         }
@@ -127,13 +140,25 @@ export default function App() {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         setWorking(false);
+        setCancelling(false);
       }
     },
     [refreshHistory, refreshAudioCache, clearAudioUrl, setCacheAudioUrl],
   );
 
+  const handleCancel = useCallback(async () => {
+    if (!working || cancelling) return;
+    setCancelling(true);
+    // Graceful cancel: the backend breaks at the next chunk boundary and
+    // resolves /api/transcribe with the partial result, which we await so
+    // nothing is lost. fire-and-forget the signal itself.
+    abortJob().catch(() => {});
+  }, [working, cancelling]);
+
   const handleRestore = useCallback(
     async (id: string) => {
+      // Don't clobber an in-flight transcription's state.
+      if (working) return;
       try {
         const rec = await fetchHistoryRecord(id);
         if (isApiError(rec)) {
@@ -153,7 +178,7 @@ export default function App() {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [clearAudioUrl, setCacheAudioUrl],
+    [working, clearAudioUrl, setCacheAudioUrl],
   );
 
   const handleDelete = useCallback(
@@ -191,8 +216,19 @@ export default function App() {
     setSeekTo(time);
   }, []);
 
+  useEffect(() => {
+    audioUrlRef.current = audioUrl;
+  }, [audioUrl]);
+
+  useEffect(() => {
+    return () => {
+      const url = audioUrlRef.current;
+      if (url && url.startsWith("blob:")) URL.revokeObjectURL(url);
+    };
+  }, []);
+
   if (!ready || switching) {
-    return <BootOverlay state={readiness} failed={failed} />;
+    return <BootOverlay state={readiness} failed={failed} onRetry={restart} />;
   }
 
   const hasResult = segments.length > 0 || text.length > 0;
@@ -266,9 +302,21 @@ export default function App() {
 
       {/* ── Main: wide transcript ──────────────────────────────── */}
       <main className="flex-1 min-h-0 overflow-hidden">
-        {working && jobStatus?.message && (
-          <div className="px-5 sm:px-8 py-2 border-b border-white/8 font-mono text-xs text-white/60 animate-fade-in">
-            {jobStatus.message}
+        {working && (
+          <div className="px-5 sm:px-8 py-2 border-b border-white/8 flex items-center justify-between gap-4 animate-fade-in">
+            <span className="font-mono text-xs text-white/60 truncate">
+              {cancelling
+                ? "Cancelling - stopping at next chunk…"
+                : (jobStatus?.message ?? "Working…")}
+            </span>
+            <button
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="btn-ghost shrink-0 py-1 px-3 text-xs"
+              title="Cancel transcription"
+            >
+              {cancelling ? "Cancelling…" : "Cancel"}
+            </button>
           </div>
         )}
         {error && (
@@ -294,6 +342,7 @@ export default function App() {
             audioUrl={audioUrl}
             onTimeUpdate={setCurrentTime}
             seekTo={seekTo}
+            onSeeked={() => setSeekTo(null)}
           />
         </footer>
       )}
@@ -351,6 +400,16 @@ export default function App() {
 }
 
 /* ── Reusable overlay (centered modal) ─────────────────────────── */
+function useDismissOnEscape(onClose: () => void) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+}
+
 function Overlay({
   children,
   onClose,
@@ -360,12 +419,22 @@ function Overlay({
   onClose: () => void;
   title: string;
 }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useDismissOnEscape(onClose);
+  useEffect(() => {
+    // Move focus into the dialog so keyboard users aren't stranded on the
+    // page behind it, and so screen readers announce the dialog title.
+    closeRef.current?.focus();
+  }, []);
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-md animate-fade-in"
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className="glass-strong w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-3xl animate-slide-up"
         onClick={(e) => e.stopPropagation()}
       >
@@ -374,8 +443,10 @@ function Overlay({
             {title}
           </h2>
           <button
+            ref={closeRef}
             onClick={onClose}
-            className="font-mono text-base text-white/50 hover:text-white transition-colors"
+            aria-label={`Close ${title}`}
+            className="font-mono text-base text-white/50 hover:text-white transition-colors p-2 -m-2 rounded-lg"
           >
             ✕
           </button>
@@ -398,6 +469,11 @@ function Drawer({
   title: string;
   side?: "left" | "right";
 }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useDismissOnEscape(onClose);
+  useEffect(() => {
+    closeRef.current?.focus();
+  }, []);
   const sideClass =
     side === "left"
       ? "left-0 animate-slide-in-left"
@@ -406,6 +482,9 @@ function Drawer({
     <div className="fixed inset-0 z-50 animate-fade-in" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40 backdrop-blur-md" />
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className={`glass-strong absolute top-0 ${sideClass} h-full w-full max-w-sm rounded-r-3xl overflow-y-auto`}
         onClick={(e) => e.stopPropagation()}
       >
@@ -414,8 +493,10 @@ function Drawer({
             {title}
           </h2>
           <button
+            ref={closeRef}
             onClick={onClose}
-            className="font-mono text-base text-white/50 hover:text-white transition-colors"
+            aria-label={`Close ${title}`}
+            className="font-mono text-base text-white/50 hover:text-white transition-colors p-2 -m-2 rounded-lg"
           >
             ✕
           </button>

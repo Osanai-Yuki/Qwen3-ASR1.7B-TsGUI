@@ -4,10 +4,12 @@ import { phaseLabel } from "../hooks/useReadiness";
 interface Props {
   state: ReadinessResponse | null;
   failed: boolean;
+  /** Re-poll readiness (from useReadiness.restart). Shown on error/connect-failure. */
+  onRetry?: () => void;
 }
 
 /** Full-screen mask shown while the backend boot sequence runs. */
-export function BootOverlay({ state, failed }: Props) {
+export function BootOverlay({ state, failed, onRetry }: Props) {
   const label = phaseLabel(state?.phase ?? "starting", state?.error ?? null);
   const isError = state?.phase === "error";
 
@@ -45,6 +47,27 @@ export function BootOverlay({ state, failed }: Props) {
           <p className="font-mono text-xs text-red-400/70 text-center break-words">
             {state.error}
           </p>
+        </div>
+      )}
+      {(isError || (failed && !isError)) && (
+        <div className="mt-4 max-w-md px-6 flex flex-col items-center gap-4">
+          {isError ? (
+            <p className="font-mono text-xs text-white/45 text-center">
+              The ASR model may be missing or failed to load (insufficient VRAM,
+              corrupt weights). Verify the files under{" "}
+              <span className="text-white/65">models/asr/</span> and restart the
+              app if the error persists.
+            </p>
+          ) : (
+            <p className="font-mono text-xs text-white/45 text-center">
+              Can't reach the backend. Make sure the server is running.
+            </p>
+          )}
+          {onRetry && (
+            <button onClick={onRetry} className="btn-primary">
+              {isError ? "Retry" : "Reconnect"}
+            </button>
+          )}
         </div>
       )}
     </div>

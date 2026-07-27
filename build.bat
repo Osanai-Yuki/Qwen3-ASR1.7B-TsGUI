@@ -19,7 +19,7 @@ if defined PYTHON_EXE (
 ) else (
     where conda >nul 2>&1
     if not errorlevel 1 (
-        set "PYCMD=conda run -n qwen3-asr --no-capture-output python"
+        set "PYCMD=conda run -n qwen3asr --no-capture-output python"
     ) else (
         set "PYCMD=python"
     )
@@ -27,10 +27,10 @@ if defined PYTHON_EXE (
 
 echo Using Python: %PYCMD%
 echo Verifying environment...
-%PYCMD% -c "import fastapi, uvicorn, numpy, PyInstaller" >nul 2>&1
+call %PYCMD% -c "import fastapi, uvicorn, numpy, PyInstaller" >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Required packages missing in the target Python environment.
-    echo         Activate qwen3-asr or run: conda env create -f environment.yml
+    echo         Activate qwen3asr or run: conda env create -f environment.yml
     pause
     exit /b 1
 )

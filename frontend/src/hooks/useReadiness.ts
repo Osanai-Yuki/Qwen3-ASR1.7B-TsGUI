@@ -34,7 +34,9 @@ export function useReadiness() {
   }, []);
 
   const restart = useCallback(() => {
+    cancelledRef.current = true;
     if (timer.current !== null) window.clearTimeout(timer.current);
+    cancelledRef.current = false;
     poll();
   }, [poll]);
 

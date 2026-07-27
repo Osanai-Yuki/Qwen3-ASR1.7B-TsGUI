@@ -7,10 +7,13 @@ interface Props {
   onTimeUpdate: (time: number) => void;
   /** Seek to a specific time (triggered by clicking a transcript line). */
   seekTo: number | null;
+  /** Called after a programmatic seek completes so the caller can clear the
+   * seek request - without this, seekTo stays set and re-seeks every render. */
+  onSeeked?: () => void;
 }
 
 /** Bottom audio player bar wired to the transcript highlight system. */
-export function AudioPlayer({ audioUrl, onTimeUpdate, seekTo }: Props) {
+export function AudioPlayer({ audioUrl, onTimeUpdate, seekTo, onSeeked }: Props) {
   const audioRef = useRef<HTMLAudioElement>(null);
 
   useEffect(() => {
@@ -20,6 +23,14 @@ export function AudioPlayer({ audioUrl, onTimeUpdate, seekTo }: Props) {
     el.addEventListener("timeupdate", handler);
     return () => el.removeEventListener("timeupdate", handler);
   }, [onTimeUpdate]);
+
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el || !onSeeked) return;
+    const handler = () => onSeeked();
+    el.addEventListener("seeked", handler);
+    return () => el.removeEventListener("seeked", handler);
+  }, [onSeeked]);
 
   useEffect(() => {
     if (seekTo !== null && audioRef.current) {

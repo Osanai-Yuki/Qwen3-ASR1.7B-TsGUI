@@ -1,11 +1,17 @@
 import io
 import struct
+import subprocess
 import wave
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 import backend.main as main_mod
+import numpy as np
+
+from backend.forced_aligner import _align_words
+from backend.llamarunner import LlamaRunner
 from backend.resegment import resegment_words
 from backend.text_clean import clean_asr_text, clean_segments
 
@@ -41,7 +47,7 @@ def make_client(runner_alive: bool = True, aligner_available: bool = False, tmp_
         error=None,
     )
 
-    return TestClient(main_mod.app)
+    return TestClient(main_mod.app, base_url="http://127.0.0.1:8000")
 
 
 def _make_wav_bytes(seconds: float = 0.5, sr: int = 16000) -> bytes:
@@ -377,3 +383,311 @@ def test_transcribe_pipeline_aligns(tmp_path, monkeypatch):
     assert "words1" in body["text"]
     assert "words2" in body["text"]
     assert body["history_id"]
+
+
+# ── Cancel / abort (Task 2) ──────────────────────────────────────────────
+def test_abort_sets_cancel_flag():
+    client = make_client()
+    with main_mod.job_lock:
+        main_mod._cancel_requested = False
+    r = client.post("/api/abort")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert main_mod._is_cancel_requested() is True
+
+
+def test_claim_job_resets_cancel_flag():
+    """A fresh job must not inherit a cancel requested by the previous one."""
+    make_client()
+    main_mod._request_cancel()
+    assert main_mod._is_cancel_requested() is True
+    assert main_mod._claim_job() is True
+    assert main_mod._is_cancel_requested() is False
+    with main_mod.job_lock:
+        main_mod.job_state["status"] = "idle"
+
+
+def test_claim_job_blocks_during_switch():
+    make_client()
+    main_mod._set_boot(switching=True)
+    assert main_mod._claim_job() is False
+    main_mod._set_boot(switching=False)
+    assert main_mod._claim_job() is True
+    with main_mod.job_lock:
+        main_mod.job_state["status"] = "idle"
+
+
+def test_cancel_during_transcribe_keeps_partial(tmp_path, monkeypatch):
+    client = make_client(tmp_path=tmp_path)
+    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25), 0.0) for i in range(3)]
+    for p, _, _ in fake_chunks:
+        p.write_bytes(_make_wav_bytes(0.1))
+    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 75.0)
+    monkeypatch.setattr(main_mod, "split_audio", lambda _s, _o, _c, _v, **_k: fake_chunks)
+
+    calls = {"n": 0}
+
+    async def fake_chunk(_client, _path, initial_prompt=None):
+        calls["n"] += 1
+        # After the first chunk succeeds, request cancel; the next iteration's
+        # top-of-loop check breaks out and returns the partial result.
+        if calls["n"] >= 1:
+            main_mod._request_cancel()
+        return {"text": f"chunk{calls['n']}",
+                "segments": [{"start": 0.0, "end": 1.0, "text": f"chunk{calls['n']}"}]}
+
+    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
+
+    r = client.post(
+        "/api/transcribe",
+        files={"file": ("x.wav", _make_wav_bytes(0.1), "audio/wav")},
+        data={"align": "false"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("cancelled") is True
+    assert "chunk1" in body["text"]
+    assert "chunk3" not in body["text"]
+    # Slot released to a terminal (non-busy) state.
+    assert main_mod.job_state["status"] == "cancelled"
+
+
+# ── Path-leak fix (Task 2 security) ──────────────────────────────────────
+def test_models_endpoint_strips_paths(monkeypatch):
+    """The /api/models response must not expose absolute filesystem paths."""
+    client = make_client()
+    monkeypatch.setattr(
+        main_mod,
+        "_scan_asr_models",
+        lambda: [{"name": "m", "path": "/secret/m.gguf", "size": 1, "mmproj": "/secret/mm.gguf"}],
+    )
+    r = client.get("/api/models")
+    assert r.status_code == 200
+    models = r.json()["models"]
+    assert len(models) == 1
+    m = models[0]
+    assert "path" not in m
+    assert "mmproj" not in m
+    assert m["has_mmproj"] is True
+    assert m["name"] == "m"
+
+
+def test_models_switch_rejected_while_switching(monkeypatch):
+    monkeypatch.setattr(
+        main_mod, "_scan_asr_models",
+        lambda: [{"name": "m", "path": "/x", "size": 1, "mmproj": None}],
+    )
+    client = make_client()
+    main_mod._set_boot(switching=True)
+    try:
+        r = client.post("/api/models/switch", json={"model": "m"})
+        assert r.status_code == 200
+        assert r.json()["error"] == "busy"
+    finally:
+        main_mod._set_boot(switching=False)
+
+
+# ── Middleware hardening (Task 2 security) ───────────────────────────────
+def test_middleware_blocks_cross_site_sfs():
+    """A cross-site Sec-Fetch-Site (drive-by subresource) must be rejected."""
+    client = make_client()
+    r = client.get("/api/health", headers={"sec-fetch-site": "cross-site"})
+    assert r.status_code == 403
+
+
+def test_middleware_allows_same_origin_sfs():
+    client = make_client()
+    r = client.get("/api/health", headers={"sec-fetch-site": "same-origin"})
+    assert r.status_code == 200
+
+
+def test_middleware_blocks_foreign_host():
+    """A non-loopback Host header (DNS rebinding) must be rejected."""
+    client = make_client()
+    r = client.get("/api/health", headers={"host": "evil.example.com"})
+    assert r.status_code == 403
+
+
+# ── Audio-cache traversal (Task 2 security) ──────────────────────────────
+def test_audio_cache_serve_traversal_notfound(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "audio_cache"
+    cache_dir.mkdir()
+    (cache_dir / "clip.mp3").write_bytes(b"ID3fake")
+    monkeypatch.setattr(main_mod, "AUDIO_CACHE_DIR", cache_dir)
+    client = make_client(tmp_path=tmp_path)
+
+    # Positive: a cached file serves.
+    r = client.get("/api/audio-cache/clip.mp3")
+    assert r.status_code == 200
+
+    # Traversal: path-like names are rejected (never 200, never leak a file).
+    r2 = client.get("/api/audio-cache/..%2fevil.mp3")
+    assert r2.status_code in (400, 404)
+
+    # Missing file.
+    r3 = client.get("/api/audio-cache/nope.mp3")
+    assert r3.status_code == 404
+
+
+# ── Review fixes: IPv6 Host, non-loopback LAN access, partial-MP3 cleanup ──
+def test_middleware_allows_ipv6_loopback_host():
+    """[::1] is a loopback literal and must be accepted, not split into '['."""
+    client = make_client()
+    r = client.get("/api/health", headers={"host": "[::1]:8000"})
+    assert r.status_code == 200
+
+
+def test_middleware_nonloopback_allows_lan_host(monkeypatch):
+    """A non-loopback bind (HOST=0.0.0.0) without ASR_ALLOWED_HOSTS must allow
+    LAN Hosts - the documented LAN-share use case - not 403 them."""
+    monkeypatch.setattr(main_mod, "_BIND_IS_LOOPBACK", False)
+    client = make_client()
+    r = client.get("/api/health", headers={"host": "192.168.1.5:8000"})
+    assert r.status_code == 200
+
+
+def test_middleware_nonloopback_restricts_when_allowed_hosts_set(monkeypatch):
+    """With ASR_ALLOWED_HOSTS set, a non-loopback share restricts to those Hosts."""
+    monkeypatch.setattr(main_mod, "_BIND_IS_LOOPBACK", False)
+    monkeypatch.setattr(main_mod, "_ALLOWED_HOSTS_EXTRA", {"myhost.local"})
+    client = make_client()
+    assert client.get("/api/health", headers={"host": "myhost.local:8000"}).status_code == 200
+    assert client.get("/api/health", headers={"host": "evil.example.com:8000"}).status_code == 403
+
+
+def test_extract_failure_clears_partial_cache_mp3(tmp_path, monkeypatch):
+    """A failed video->MP3 extract must not leave a partial MP3 that a retry
+    would silently reuse as truncated audio."""
+    cache_dir = tmp_path / "audio_cache"
+    cache_dir.mkdir()
+    monkeypatch.setattr(main_mod, "AUDIO_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(main_mod, "is_video_file", lambda _p: True)
+
+    def fake_extract(_src, dst, _br):
+        dst.write_bytes(b"ID3partial")  # partial output left behind, like a timeout
+        raise RuntimeError("simulated extract timeout")
+
+    monkeypatch.setattr(main_mod, "extract_audio_to_mp3", fake_extract)
+
+    client = make_client(tmp_path=tmp_path)
+    r = client.post(
+        "/api/transcribe",
+        files={"file": ("clip.mp4", b"\x00" * 16, "video/mp4")},
+        data={"align": "false"},
+    )
+    assert r.json()["error"] == "extract_failed"
+    # The partial MP3 must have been deleted so a retry re-extracts.
+    assert not list(cache_dir.glob("*.mp3"))
+    # Slot released to a terminal state.
+    assert main_mod.job_state["status"] not in ("preparing", "transcribing", "aligning")
+
+
+# ── High-severity fixes regression tests ───────────────────────────────────
+
+def test_llama_runner_stops_process_on_startup_failure(tmp_path, monkeypatch):
+    """A failed llama-server startup must not leave a leaked subprocess."""
+    runner = LlamaRunner(
+        bin_path=str(tmp_path / "llama-server.exe"),
+        host="127.0.0.1",
+        port=8080,
+    )
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            self.stdout = None
+            self.stderr = None
+            self._returncode = None
+
+        def poll(self):
+            return 1  # process exited immediately
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            self._returncode = 1
+            return 1
+
+        @property
+        def returncode(self):
+            return self._returncode
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    with pytest.raises(RuntimeError):
+        runner.start(model_path=str(tmp_path / "model.gguf"))
+    assert runner.process is None
+    assert not runner.is_alive()
+
+
+def test_claim_job_blocks_until_ready():
+    """Transcription jobs cannot be claimed while the backend is still booting."""
+    make_client()
+    main_mod._set_boot(ready=False, phase="starting", switching=False)
+    try:
+        assert main_mod._claim_job() is False
+    finally:
+        main_mod._set_boot(ready=True, phase="ready")
+
+
+def test_transcribe_rejected_when_not_ready(tmp_path):
+    """/api/transcribe returns busy while boot has not completed."""
+    client = make_client(tmp_path=tmp_path)
+    main_mod._set_boot(ready=False, phase="starting", switching=False)
+    try:
+        r = client.post(
+            "/api/transcribe",
+            files={"file": ("x.wav", _make_wav_bytes(0.1), "audio/wav")},
+            data={"align": "false"},
+        )
+        assert r.status_code == 409
+        assert r.json()["error"] == "busy"
+    finally:
+        main_mod._set_boot(ready=True, phase="ready")
+
+
+def test_models_switch_rejected_when_not_ready(monkeypatch):
+    """/api/models/switch is refused while the backend is still booting."""
+    client = make_client()
+    main_mod._set_boot(ready=False, phase="starting", switching=False)
+    monkeypatch.setattr(
+        main_mod,
+        "_scan_asr_models",
+        lambda: [{"name": "m", "path": "/x", "size": 1, "mmproj": None}],
+    )
+    try:
+        r = client.post("/api/models/switch", json={"model": "m"})
+        assert r.json()["error"] == "busy"
+        assert r.json()["detail"] == "backend is not ready"
+    finally:
+        main_mod._set_boot(ready=True, phase="ready")
+
+
+def test_models_switch_validation_failure_releases_switching(monkeypatch):
+    """Invalid tuning params must not leave the switching flag stuck."""
+    client = make_client()
+    monkeypatch.setattr(
+        main_mod,
+        "_scan_asr_models",
+        lambda: [{"name": "m", "path": "/x", "size": 1, "mmproj": None}],
+    )
+    try:
+        r = client.post("/api/models/switch", json={"model": "m", "ctx_size": 100})
+        assert r.json()["error"] == "bad_request"
+        assert main_mod.boot_state["switching"] is False
+        assert main_mod.boot_state["ready"] is True
+    finally:
+        main_mod._set_boot(switching=False, phase="ready", ready=True)
+
+
+def test_safe_upload_suffix_allowlist():
+    """Known media extensions pass through; unknown/empty extensions fall back to .bin."""
+    assert main_mod._safe_upload_suffix("song.mp3") == ".mp3"
+    assert main_mod._safe_upload_suffix("clip.mp4") == ".mp4"
+    assert main_mod._safe_upload_suffix("malware.exe") == ".bin"
+    assert main_mod._safe_upload_suffix(None) == ".bin"
+
+
+def test_align_words_rejects_nul_bytes():
+    """NUL bytes in transcript must be rejected before crossing to C string API."""
+    pcm = np.zeros(10, dtype=np.float32)
+    assert _align_words("model.gguf", "hello\x00world", pcm) == []

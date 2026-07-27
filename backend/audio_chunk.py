@@ -17,7 +17,7 @@ _VIDEO_EXTS = {
 }
 
 
-def _resolve_ffmpeg(name: str) -> str:
+def resolve_ffmpeg(name: str) -> str:
     path = shutil.which(name)
     if not path:
         raise FFmpegMissingError(
@@ -27,19 +27,24 @@ def _resolve_ffmpeg(name: str) -> str:
 
 
 def probe_duration(input_path: Path) -> float:
-    ffprobe = _resolve_ffmpeg("ffprobe")
-    result = subprocess.run(
-        [
-            ffprobe,
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "json",
-            str(input_path),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    ffprobe = resolve_ffmpeg("ffprobe")
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "json",
+                str(input_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        # A crafted/hung media file must not hang the server indefinitely.
+        return 0.0
     data = json.loads(result.stdout or "{}")
     return float(data.get("format", {}).get("duration", 0.0))
 
@@ -67,7 +72,7 @@ def split_audio(
     Extraction runs in a thread pool — each ffmpeg invocation is independent
     and I/O-bound.  Results are returned in chronological order.
     """
-    ffmpeg = _resolve_ffmpeg("ffmpeg")
+    ffmpeg = resolve_ffmpeg("ffmpeg")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     duration = probe_duration(input_path)
@@ -77,17 +82,31 @@ def split_audio(
     # Clamp overlap so the step stays positive and meaningful.
     overlap = max(0.0, min(overlap, chunk_seconds * 0.4))
     step = chunk_seconds - overlap
+    # Reject a degenerate chunk_seconds that would explode the plan (e.g. an
+    # env-set CHUNK_SECONDS=0.01 → hundreds of thousands of chunks). 1.0s is
+    # well below any useful chunk size and keeps the plan bounded.
+    if chunk_seconds < 1.0 or step <= 0.0:
+        raise ValueError(
+            f"invalid chunk_seconds={chunk_seconds} overlap={overlap}: "
+            "step must stay positive (chunk_seconds >= 1.0)"
+        )
 
     # Build the extraction plan: (idx, start_offset, prev_end).
     plan: list[tuple[int, float, float]] = []
     start = 0.0
     prev_end = 0.0
     idx = 0
+    MAX_PLAN = 6000  # hard cap: a 25s step needs ~8h of audio to reach this
     while start < duration:
         plan.append((idx, start, prev_end))
         prev_end = start  # next chunk is responsible from where this one began
         start += step
         idx += 1
+        if len(plan) > MAX_PLAN:
+            raise ValueError(
+                f"audio too long to split: would exceed {MAX_PLAN} chunks "
+                f"(duration={duration:.0f}s, step={step:.3f}s)"
+            )
 
     def extract(item: tuple[int, float, float]) -> tuple[Path, float, float] | None:
         i, s, pe = item
@@ -104,7 +123,7 @@ def split_audio(
             "-c:a", "pcm_s16le",
             str(out_path),
         ]
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
         if out_path.stat().st_size > 44:
             return (out_path, s, pe)
         return None
@@ -123,7 +142,7 @@ def split_audio(
 
 def probe_audio_bitrate(input_path: Path) -> int | None:
     """Best-effort audio-stream bitrate in bits/sec (None if unknown/VBR)."""
-    ffprobe = _resolve_ffmpeg("ffprobe")
+    ffprobe = resolve_ffmpeg("ffprobe")
     try:
         result = subprocess.run(
             [
@@ -137,8 +156,9 @@ def probe_audio_bitrate(input_path: Path) -> int | None:
             capture_output=True,
             text=True,
             check=True,
+            timeout=30,
         )
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
     data = json.loads(result.stdout or "{}")
     streams = data.get("streams") or []
@@ -193,7 +213,7 @@ def extract_audio_to_mp3(src: Path, dst: Path, target_bitrate: int) -> Path:
     ``target_bitrate`` is in bits/sec (e.g. 256000). The video stream is
     dropped (``-vn``); output is stereo 44.1 kHz libmp3lame.
     """
-    ffmpeg = _resolve_ffmpeg("ffmpeg")
+    ffmpeg = resolve_ffmpeg("ffmpeg")
     dst.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         ffmpeg,
@@ -207,7 +227,7 @@ def extract_audio_to_mp3(src: Path, dst: Path, target_bitrate: int) -> Path:
         "-b:a", str(target_bitrate),
         str(dst),
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    subprocess.run(cmd, check=True, capture_output=True, timeout=600)
     return dst
 
 
