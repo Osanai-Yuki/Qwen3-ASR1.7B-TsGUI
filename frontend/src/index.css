@@ -274,102 +274,14 @@ body {
   }
 }
 
-/* ── Animations ───────────────────────────────────────────────────────── */
-@keyframes pulse-block {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.3;
-  }
-}
-.animate-pulse-block {
-  animation: pulse-block 1.2s ease-in-out infinite;
-}
-
-@keyframes fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-.animate-fade-in {
-  animation: fade-in 0.3s ease-out both;
-}
-
-@keyframes slide-up {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-.animate-slide-up {
-  animation: slide-up 0.35s ease-out both;
-}
-
-@keyframes progress-glow {
-  0%,
-  100% {
-    box-shadow: 0 0 4px rgba(255, 255, 255, 0.1);
-  }
-  50% {
-    box-shadow: 0 0 12px rgba(255, 255, 255, 0.25);
-  }
-}
-.animate-progress-glow {
-  animation: progress-glow 2s ease-in-out infinite;
-}
-
-/* ── Drawer slide animations ─────────────────────────────────────────── */
-@keyframes slide-in-left {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(0);
-  }
-}
-@keyframes slide-in-right {
-  from {
-    transform: translateX(100%);
-  }
-  to {
-    transform: translateX(0);
-  }
-}
-.animate-slide-in-left {
-  animation: slide-in-left 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-.animate-slide-in-right {
-  animation: slide-in-right 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-/* ── Button system ───────────────────────────────────────────────────── */
-@layer components {
-  .btn-primary {
-    @apply font-mono text-[13px] font-bold uppercase tracking-widest bg-white text-black
-      px-4 py-2.5 rounded-lg
-      transition-all duration-200
-      hover:bg-neutral-200 active:scale-[0.98]
-      disabled:bg-neutral-800 disabled:text-neutral-600 disabled:cursor-not-allowed
-      focus:outline-none focus:ring-2 focus:ring-white/40;
-  }
-  .btn-ghost {
-    @apply font-mono text-[13px] uppercase tracking-widest text-neutral-400
-      border border-neutral-700 px-3.5 py-2.5 rounded-lg
-      transition-all duration-200
-      hover:text-white hover:border-neutral-500 hover:bg-neutral-900
-      active:scale-[0.98]
-      disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent
-      focus:outline-none focus:ring-2 focus:ring-white/30;
+/* ── Reduced motion: respect users who prefer less movement ────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }

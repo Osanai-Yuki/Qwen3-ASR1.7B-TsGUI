@@ -59,6 +59,9 @@ Tunable environment variables (set before launching `start.bat` or uvicorn):
 | `CHUNK_SECONDS` | `25` | Audio chunk length in seconds. Lower this if you still hit context overflow. |
 | `KV_QUANT` | `q8_0` | KV-cache quantization (`q8_0`, `q4_0`, `f16`). Quantized KV roughly halves VRAM. |
 | `SKIP_LLAMA` | `0` | Set to `1` to run the API without spawning llama-server (UI dev mode). |
+| `HOST` | `127.0.0.1` | Bind address. Set to `0.0.0.0` to share on a trusted LAN (no auth - only expose on trusted networks). |
+| `ASR_ALLOWED_HOSTS` | _(empty)_ | Comma-separated Host names to allow when sharing on a LAN (e.g. `myhost.local`). Empty = allow any Host on a non-loopback bind; drive-by browsers are still blocked by Origin/Sec-Fetch-Site checks. |
+| `ASR_NO_BROWSER` | `0` | Set to `1` to suppress the automatic browser open on launch (run.py / start.bat). |
 
 ## Forced Alignment (optional)
 
@@ -175,7 +178,7 @@ This creates the conda environment, installs all dependencies, and checks for re
 
 ```powershell
 conda env create -f environment.yml
-conda activate qwen3-asr
+conda activate qwen3asr
 ```
 
 #### 2. Frontend dependencies
@@ -203,7 +206,7 @@ This activates the conda environment, builds the frontend, and starts the server
 
 ```powershell
 # Activate conda environment
-conda activate qwen3-asr
+conda activate qwen3asr
 
 # Build frontend
 cd frontend
@@ -218,7 +221,7 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 ```powershell
 # Terminal 1: Backend (skip llama-server for UI dev)
-conda activate qwen3-asr
+conda activate qwen3asr
 $env:SKIP_LLAMA = "1"
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
@@ -236,6 +239,7 @@ The Vite dev server proxies `/api` requests to the backend at port 8000.
 | `GET` | `/api/health` | `{ backend, llama_server, aligner_available, aligner_running }` |
 | `GET` | `/api/status` | Current job status `{ status, progress, message }` |
 | `POST` | `/api/transcribe` | Upload audio, returns `{ text, segments[], stats }` |
+| `POST` | `/api/abort` | Request cancellation of the in-flight transcription (stops at next chunk boundary) |
 | `POST` | `/api/align` | Standalone forced alignment (audio + text → word timestamps) |
 
 ### Transcribe parameters
@@ -284,7 +288,7 @@ curl -X POST http://localhost:8000/api/transcribe -F "file=@audio.wav" -F "align
 
 ```powershell
 # Backend tests (skip llama-server spawn for unit testing)
-conda activate qwen3-asr
+conda activate qwen3asr
 $env:SKIP_LLAMA = "1"
 python -m pytest backend\test_main.py -v
 

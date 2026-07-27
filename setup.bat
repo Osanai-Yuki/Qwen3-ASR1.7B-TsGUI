@@ -15,8 +15,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/4] Creating conda environment "qwen3-asr"...
-conda env list | findstr /b /c:"qwen3-asr " >nul
+echo [1/4] Creating conda environment "qwen3asr"...
+conda env list | findstr /b /c:"qwen3asr " >nul
 if errorlevel 1 (
     conda env create -f "%ROOT%environment.yml"
     if errorlevel 1 (

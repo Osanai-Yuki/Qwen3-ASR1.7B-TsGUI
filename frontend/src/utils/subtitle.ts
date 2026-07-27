@@ -10,7 +10,7 @@ export function toSRT(segments: Segment[]): string {
     .map((seg, i) => {
       const start = formatTimestamp(seg.start).replace(".", ",");
       const end = formatTimestamp(seg.end).replace(".", ",");
-      return `${i + 1}\n${start} --> ${end}\n${seg.text}`;
+      return `${i + 1}\n${start} --> ${end}\n${normalizeSubtitleText(seg.text)}`;
     })
     .join("\n\n");
 }
@@ -21,10 +21,22 @@ export function toVTT(segments: Segment[]): string {
     .map((seg) => {
       const start = formatTimestamp(seg.start);
       const end = formatTimestamp(seg.end);
-      return `${start} --> ${end}\n${seg.text}`;
+      return `${start} --> ${end}\n${normalizeSubtitleText(seg.text)}`;
     })
     .join("\n\n");
   return `WEBVTT\n\n${body}`;
+}
+
+function normalizeSubtitleText(text: string): string {
+  return text.replace(/\n{2,}/g, "\n");
+}
+
+function escapeAssText(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/\{/g, "\\{")
+    .replace(/\}/g, "\\}")
+    .replace(/\n/g, "\\N");
 }
 
 /** ASS — script info + default style + Dialogue lines (centisecond timing). */
@@ -44,7 +56,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   const events = segments
     .map(
       (seg) =>
-        `Dialogue: 0,${formatAssTime(seg.start)},${formatAssTime(seg.end)},Default,,0,0,0,,${seg.text}`,
+        `Dialogue: 0,${formatAssTime(seg.start)},${formatAssTime(seg.end)},Default,,0,0,0,,${escapeAssText(seg.text)}`,
     )
     .join("\n");
   return header + events + "\n";
@@ -112,9 +124,13 @@ export function downloadSubtitle(
   const content = buildSubtitle(format, text, segments, stats);
   const blob = new Blob([content], { type: `${spec.mime};charset=utf-8` });
   const url = URL.createObjectURL(blob);
+  const safeBaseName = (baseName || "transcript").replace(
+    /[<>:"\/\\|?*\x00-\x1f]/g,
+    "_",
+  );
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${baseName}.${spec.ext}`;
+  a.download = `${safeBaseName}.${spec.ext}`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

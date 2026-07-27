@@ -23,15 +23,28 @@ interface Props {
   compact?: boolean;
 }
 
+/** Max accepted upload size (MB). Mirrors the backend ASR_MAX_UPLOAD_BYTES cap
+ * (2 GB default) so an oversized file is rejected before the blob URL pins it
+ * in browser memory and before the round-trip to /api/transcribe. */
+const MAX_UPLOAD_MB = 2048;
+
 /** Drag-and-drop / click-to-select audio/video upload with an optional alignment toggle. */
 export function UploadZone({ onTranscribe, disabled, alignerAvailable, compact }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [align, setAlign] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [sizeError, setSizeError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const pick = (f: File | null) => {
-    if (f) setFile(f);
+    if (!f) return;
+    if (f.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setFile(null);
+      setSizeError(`File exceeds the ${MAX_UPLOAD_MB} MB limit.`);
+      return;
+    }
+    setSizeError(null);
+    setFile(f);
   };
 
   const submit = () => {
@@ -43,7 +56,17 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable, compact }
   return (
     <div>
       <div
+        role="button"
+        tabIndex={disabled ? -1 : 0}
+        aria-label="Drag and drop an audio or video file, or activate to choose a file"
+        aria-disabled={disabled}
         onClick={() => !disabled && inputRef.current?.click()}
+        onKeyDown={(e) => {
+          if (!disabled && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            inputRef.current?.click();
+          }
+        }}
         onDragOver={(e) => {
           e.preventDefault();
           if (!disabled) setDragging(true);
@@ -66,7 +89,12 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable, compact }
           type="file"
           accept={ACCEPT}
           className="hidden"
-          onChange={(e) => pick(e.target.files?.[0] ?? null)}
+          onChange={(e) => {
+            pick(e.target.files?.[0] ?? null);
+            // Reset so picking the same file again still fires onChange
+            // (otherwise re-selecting a rejected/identical file is a no-op).
+            e.target.value = "";
+          }}
         />
         {file ? (
           <div className="text-center animate-fade-in">
@@ -91,6 +119,12 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable, compact }
           </div>
         )}
       </div>
+
+      {sizeError && (
+        <p className="font-mono text-xs text-red-400 mt-2 break-words">
+          {sizeError}
+        </p>
+      )}
 
       <label
         className={`flex items-center gap-3 mt-4 font-mono text-sm text-white/80 ${

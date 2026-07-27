@@ -8,6 +8,7 @@ but MP3s converted from video sources are cached separately under
 """
 import json
 import logging
+import re
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -16,6 +17,20 @@ from typing import Any
 
 logger = logging.getLogger("asr")
 _lock = threading.Lock()
+
+# Per-file read ceiling for history records.  A malformed or oversized file placed
+# in the history root must not be allowed to exhaust memory while parsing.
+MAX_HISTORY_FILE_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+# History IDs are produced by _safe_id() as the first 12 hex chars of a UUID4.
+# Enforcing this shape everywhere a record is looked up closes a path-traversal
+# hole: the FastAPI route {hid} only blocks literal "/", but on Windows a
+# "%5C"-encoded backslash decodes to "\" which pathlib treats as a separator,
+# letting an attacker escape the history root. Rejecting anything that isn't a
+# 12-char hex string defeats that (and every other traversal vector) at the
+# storage layer — the authoritative check, since HistoryStore is also used
+# directly in tests.
+_VALID_ID = re.compile(r"[0-9a-f]{12}")
 
 
 def _now_iso() -> str:
@@ -28,11 +43,24 @@ def _safe_id() -> str:
 
 class HistoryStore:
     def __init__(self, root: Path):
-        self.root = Path(root)
+        self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _path(self, hid: str) -> Path:
-        return self.root / f"{hid}.json"
+        """Resolved on-disk path for ``hid``, validating the id and containment.
+
+        Raises ``ValueError`` for any id that isn't a 12-char hex string or
+        whose resolved path escapes ``self.root``. Callers translate this into
+        a not-found result *before* touching the filesystem.
+        """
+        if not isinstance(hid, str) or not _VALID_ID.fullmatch(hid):
+            raise ValueError("invalid history id")
+        path = (self.root / f"{hid}.json").resolve()
+        # Defense-in-depth: confirm the resolved path is still inside root
+        # (catches any future encoding trick that passes the regex).
+        if path.parent != self.root:
+            raise ValueError("invalid history id")
+        return path
 
     def save(
         self,
@@ -71,6 +99,12 @@ class HistoryStore:
             )[:limit]
             for p in files:
                 try:
+                    if p.stat().st_size > MAX_HISTORY_FILE_BYTES:
+                        logger.warning(
+                            "Skipping oversized history file %s (%d bytes)",
+                            p.name, p.stat().st_size,
+                        )
+                        continue
                     data = json.loads(p.read_text(encoding="utf-8"))
                     items.append({
                         "id": data.get("id", p.stem),
@@ -87,17 +121,26 @@ class HistoryStore:
         return items
 
     def get(self, hid: str) -> dict[str, Any] | None:
-        path = self._path(hid)
+        try:
+            path = self._path(hid)
+        except ValueError:
+            return None
         if not path.exists():
             return None
         try:
+            if path.stat().st_size > MAX_HISTORY_FILE_BYTES:
+                logger.warning("Skipping oversized history %s (%d bytes)", hid, path.stat().st_size)
+                return None
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:
             logger.warning("Failed to read history %s: %s", hid, e)
             return None
 
     def delete(self, hid: str) -> bool:
-        path = self._path(hid)
+        try:
+            path = self._path(hid)
+        except ValueError:
+            return False
         if not path.exists():
             return False
         with _lock:

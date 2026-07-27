@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { AudioCacheInfo, HistoryItem } from "../types";
 import { formatDateTime, formatDuration } from "../utils/format";
 
@@ -29,6 +30,9 @@ export function HistoryPanel({
 }: Props) {
   const cacheCount = audioCache?.count ?? 0;
   const cacheBytes = audioCache?.size_bytes ?? 0;
+  // Two-step "Clear all": first click arms confirmation, second click fires.
+  // Resets on blur so a stray tab-away doesn't leave the destructive prompt armed.
+  const [confirmClear, setConfirmClear] = useState(false);
 
   return (
     <div>
@@ -41,10 +45,20 @@ export function HistoryPanel({
         </h2>
         {items.length > 0 && (
           <button
-            onClick={onClear}
-            className="font-mono text-[10px] uppercase tracking-widest text-white/45 hover:text-red-400 transition-colors"
+            onClick={() => {
+              if (confirmClear) {
+                onClear();
+                setConfirmClear(false);
+              } else {
+                setConfirmClear(true);
+              }
+            }}
+            onBlur={() => setConfirmClear(false)}
+            className={`font-mono text-[10px] uppercase tracking-widest transition-colors ${
+              confirmClear ? "text-red-400" : "text-white/45 hover:text-red-400"
+            }`}
           >
-            Clear all
+            {confirmClear ? "Confirm clear?" : "Clear all"}
           </button>
         )}
       </div>
@@ -101,8 +115,9 @@ export function HistoryPanel({
                   e.stopPropagation();
                   onDelete(item.id);
                 }}
-                className="font-mono text-xs text-white/30 group-hover:text-white/60 hover:!text-red-400 transition-colors"
+                className="font-mono text-xs text-white/30 group-hover:text-white/60 hover:!text-red-400 transition-colors p-2 -m-2 rounded-lg"
                 title="Delete"
+                aria-label={`Delete ${item.filename ?? "item"}`}
               >
                 ✕
               </button>

@@ -1,4 +1,4 @@
-name: qwen3-asr
+name: qwen3asr
 channels:
   - conda-forge
 dependencies:
