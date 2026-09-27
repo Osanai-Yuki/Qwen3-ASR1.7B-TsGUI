@@ -1,19 +1,12 @@
 import { useRef, useState } from "react";
+import {
+  AUDIO_EXTS,
+  VIDEO_EXTS,
+  isVideoFile,
+  validateFile,
+} from "../utils/fileTypes";
 
-const ACCEPT =
-  ".wav,.mp3,.flac,.ogg,.m4a,audio/*," +
-  ".mp4,.mkv,.mov,.avi,.webm,.flv,.m4v,.wmv,.mpg,.mpeg,.ts,.3gp,video/*";
-
-const VIDEO_EXTS = new Set([
-  ".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv",
-  ".m4v", ".wmv", ".mpg", ".mpeg", ".ts", ".3gp",
-]);
-
-function isVideoFile(file: File): boolean {
-  if (file.type.startsWith("video/")) return true;
-  const dot = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
-  return dot !== "" && VIDEO_EXTS.has(dot);
-}
+const ACCEPT = [...AUDIO_EXTS, ...VIDEO_EXTS, "audio/*", "video/*"].join(",");
 
 interface Props {
   onTranscribe: (file: File, align: boolean) => void;
@@ -23,27 +16,26 @@ interface Props {
   compact?: boolean;
 }
 
-/** Max accepted upload size (MB). Mirrors the backend ASR_MAX_UPLOAD_BYTES cap
- * (2 GB default) so an oversized file is rejected before the blob URL pins it
- * in browser memory and before the round-trip to /api/transcribe. */
-const MAX_UPLOAD_MB = 2048;
-
 /** Drag-and-drop / click-to-select audio/video upload with an optional alignment toggle. */
 export function UploadZone({ onTranscribe, disabled, alignerAvailable, compact }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [align, setAlign] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [sizeError, setSizeError] = useState<string | null>(null);
+  const [pickError, setPickError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const pick = (f: File | null) => {
     if (!f) return;
-    if (f.size > MAX_UPLOAD_MB * 1024 * 1024) {
+    // Reject unsupported types / oversized files up front — mirrors the
+    // backend whitelist so a stray .txt/.pdf fails here instead of after the
+    // upload round-trip. Same validator as the window-level drop path.
+    const err = validateFile(f);
+    if (err) {
       setFile(null);
-      setSizeError(`File exceeds the ${MAX_UPLOAD_MB} MB limit.`);
+      setPickError(err);
       return;
     }
-    setSizeError(null);
+    setPickError(null);
     setFile(f);
   };
 
@@ -99,35 +91,35 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable, compact }
         {file ? (
           <div className="text-center animate-fade-in">
             <p className="font-mono text-sm font-bold break-all text-white">{file.name}</p>
-            <p className="font-mono text-xs text-white/50 mt-1">
+            <p className="font-mono text-xs text-faint mt-1">
               {(file.size / 1048576).toFixed(1)} MB
             </p>
             {isVideoFile(file) && (
-              <p className="font-mono text-[10px] uppercase tracking-widest text-amber-400 mt-2">
+              <p className="font-mono text-2xs uppercase tracking-widest text-amber-400 mt-2">
                 Video → MP3 (auto bitrate)
               </p>
             )}
           </div>
         ) : (
           <div className="text-center">
-            <p className="font-sans text-sm text-white/80">
+            <p className="font-sans text-sm text-muted">
               Drag &amp; drop audio or video here
             </p>
-            <p className="font-mono text-xs text-white/40 mt-1">
+            <p className="font-mono text-xs text-muted mt-1">
               WAV · MP3 · FLAC · OGG · M4A · MP4 · MKV · MOV ...
             </p>
           </div>
         )}
       </div>
 
-      {sizeError && (
+      {pickError && (
         <p className="font-mono text-xs text-red-400 mt-2 break-words">
-          {sizeError}
+          {pickError}
         </p>
       )}
 
       <label
-        className={`flex items-center gap-3 mt-4 font-mono text-sm text-white/80 ${
+        className={`flex items-center gap-3 mt-4 font-mono text-sm text-muted ${
           !alignerAvailable || disabled ? "opacity-40" : "cursor-pointer"
         }`}
       >
@@ -141,7 +133,7 @@ export function UploadZone({ onTranscribe, disabled, alignerAvailable, compact }
         <span>
           Word-level timestamps
           {!alignerAvailable && (
-            <span className="text-white/40"> (aligner unavailable)</span>
+            <span className="text-muted"> (aligner unavailable)</span>
           )}
         </span>
       </label>

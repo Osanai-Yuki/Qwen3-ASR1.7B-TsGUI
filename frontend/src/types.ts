@@ -65,7 +65,14 @@ export interface ReadinessResponse {
 
 /** GET /api/status — current job status. */
 export interface JobStatusResponse {
-  status: "idle" | "preparing" | "transcribing" | "aligning" | "done" | "error";
+  status:
+    | "idle"
+    | "preparing"
+    | "transcribing"
+    | "aligning"
+    | "done"
+    | "error"
+    | "cancelled";
   progress: number;
   message: string;
   result: unknown;
@@ -185,3 +192,37 @@ export function isApiError(obj: unknown): obj is ApiError {
     typeof (obj as ApiError).error === "string"
   );
 }
+
+/** Batch queue item lifecycle (backend/queue_store.py). */
+export type QueueItemStatus =
+  | "queued"
+  | "running"
+  | "done"
+  | "error"
+  | "cancelled";
+
+/** A batch queue entry (GET /api/queue). */
+export interface QueueItem {
+  id: string;
+  filename: string;
+  size: number;
+  align: boolean;
+  status: QueueItemStatus;
+  history_id: string | null;
+  error: string | null;
+  added_at: string;
+  finished_at: string | null;
+}
+
+/** GET /api/queue — whole queue state. `version` is a monotonic counter;
+ * skip re-rendering when it hasn't changed. `active_id` is the item the
+ * worker is currently transcribing (null when idle or a manual job runs). */
+export interface QueueStateResponse {
+  version: number;
+  paused: boolean;
+  active_id: string | null;
+  items: QueueItem[];
+}
+
+/** POST /api/queue/sort keys. */
+export type QueueSortKey = "name" | "size" | "added_at";

@@ -1,6 +1,8 @@
+import asyncio
 import io
 import struct
 import subprocess
+import time
 import wave
 from unittest.mock import MagicMock
 
@@ -92,6 +94,55 @@ def test_readiness():
     assert data["ready"] is True
     assert data["phase"] == "ready"
     assert data["asr_loaded"] is True
+
+
+def test_readiness_retry_reboots_after_error(monkeypatch):
+    """POST /api/readiness/retry re-runs the boot sequence from phase=error."""
+    import time
+
+    client = make_client()
+    calls = {"n": 0}
+
+    def fake_boot():
+        calls["n"] += 1
+        main_mod._set_boot(phase="ready", ready=True, switching=False, error=None)
+
+    monkeypatch.setattr(main_mod, "_boot_sequence", fake_boot)
+    main_mod._set_boot(phase="error", error="boom", ready=False, switching=False)
+    try:
+        r = client.post("/api/readiness/retry")
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        # The re-run happens on a daemon thread; wait briefly for the stub.
+        for _ in range(100):
+            if calls["n"]:
+                break
+            time.sleep(0.02)
+        assert calls["n"] == 1
+        assert main_mod.boot_state["phase"] == "ready"
+    finally:
+        main_mod._set_boot(phase="ready", ready=True, switching=False, error=None)
+
+
+def test_readiness_retry_noop_unless_error():
+    """Retry is a no-op when the backend is healthy — it must not reboot."""
+    client = make_client()  # make_client leaves phase="ready"
+    r = client.post("/api/readiness/retry")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert main_mod.boot_state["phase"] == "ready"
+
+
+def test_readiness_retry_busy_while_switching():
+    """A concurrent boot/switch rejects the retry instead of double-booting."""
+    client = make_client()
+    main_mod._set_boot(phase="error", error="boom", ready=False, switching=True)
+    try:
+        r = client.post("/api/readiness/retry")
+        assert r.status_code == 200
+        assert r.json()["error"] == "busy"
+    finally:
+        main_mod._set_boot(phase="ready", ready=True, switching=False, error=None)
 
 
 def test_status_idle():
@@ -383,6 +434,142 @@ def test_transcribe_pipeline_aligns(tmp_path, monkeypatch):
     assert "words1" in body["text"]
     assert "words2" in body["text"]
     assert body["history_id"]
+
+
+def test_transcribe_concurrent_chunks(tmp_path, monkeypatch):
+    """With ASR_CONCURRENCY>1, consecutive chunks' ASR requests overlap in
+    time — the second chunk's transcription starts before the first's ends,
+    and the merged text still preserves chunk order."""
+    monkeypatch.setenv("ASR_CONCURRENCY", "2")
+    client = make_client(tmp_path=tmp_path)
+
+    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25), 0.0) for i in range(2)]
+    for p, _, _ in fake_chunks:
+        p.write_bytes(_make_wav_bytes(0.1))
+    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 50.0)
+    monkeypatch.setattr(main_mod, "iter_chunks", lambda _s, _o, _c, _v, **_k: iter(fake_chunks))
+
+    started: list[float] = []
+    done: list[float] = []
+
+    async def fake_chunk(_client, _path, initial_prompt=None):
+        started.append(time.monotonic())
+        await asyncio.sleep(0.2)
+        done.append(time.monotonic())
+        idx = int(_path.stem[1:])
+        return {"text": f"chunk{idx}",
+                "segments": [{"start": 0.0, "end": 1.0, "text": f"chunk{idx}"}]}
+
+    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
+
+    r = client.post(
+        "/api/transcribe",
+        files={"file": ("x.wav", _make_wav_bytes(0.1), "audio/wav")},
+        data={"align": "false"},
+    )
+    assert r.status_code == 200, r.text
+    assert len(started) == 2 and len(done) == 2
+    # The second chunk's ASR started before the first chunk's ASR finished.
+    assert started[1] < done[0], "chunks were not transcribed concurrently"
+    body = r.json()
+    assert body["text"] == "chunk0 chunk1"
+    assert body["segments"][0]["start"] == 0.0
+    assert body["segments"][1]["start"] == 25.0
+
+
+def test_transcribe_serial_chunks_when_concurrency_one(tmp_path, monkeypatch):
+    """ASR_CONCURRENCY=1 restores the serial pipeline: the second chunk's ASR
+    cannot start before the first chunk's ASR finishes."""
+    monkeypatch.setenv("ASR_CONCURRENCY", "1")
+    client = make_client(tmp_path=tmp_path)
+
+    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25), 0.0) for i in range(2)]
+    for p, _, _ in fake_chunks:
+        p.write_bytes(_make_wav_bytes(0.1))
+    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 50.0)
+    monkeypatch.setattr(main_mod, "iter_chunks", lambda _s, _o, _c, _v, **_k: iter(fake_chunks))
+
+    started: list[float] = []
+    done: list[float] = []
+
+    async def fake_chunk(_client, _path, initial_prompt=None):
+        started.append(time.monotonic())
+        await asyncio.sleep(0.1)
+        done.append(time.monotonic())
+        idx = int(_path.stem[1:])
+        return {"text": f"chunk{idx}",
+                "segments": [{"start": 0.0, "end": 1.0, "text": f"chunk{idx}"}]}
+
+    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
+
+    r = client.post(
+        "/api/transcribe",
+        files={"file": ("x.wav", _make_wav_bytes(0.1), "audio/wav")},
+        data={"align": "false"},
+    )
+    assert r.status_code == 200, r.text
+    assert len(started) == 2 and len(done) == 2
+    # Serial: the second chunk's ASR starts only after the first finishes
+    # (equal timestamps are fine — the point is it cannot start earlier).
+    assert started[1] >= done[0], "chunks were transcribed concurrently but ASR_CONCURRENCY=1"
+
+
+# ── VAD chunking (Task 6) ────────────────────────────────────────────────
+def test_transcribe_uses_vad_chunks(tmp_path, monkeypatch):
+    """VAD_CHUNKING=1 routes the pipeline through _vad_plan + iter_vad_chunks."""
+    monkeypatch.setattr(main_mod, "VAD_CHUNKING", True)
+    client = make_client(tmp_path=tmp_path)
+
+    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25), 0.0) for i in range(2)]
+    for p, _, _ in fake_chunks:
+        p.write_bytes(_make_wav_bytes(0.1))
+    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 50.0)
+    monkeypatch.setattr(main_mod, "_vad_plan", lambda *a, **_kw: [(0.0, 25.0), (25.0, 50.0)])
+    monkeypatch.setattr(main_mod, "iter_vad_chunks", lambda *a, **_kw: iter(fake_chunks))
+
+    async def fake_chunk(_client, _path, initial_prompt=None):
+        idx = int(_path.stem[1:])
+        return {"text": f"vad{idx}",
+                "segments": [{"start": 0.0, "end": 1.0, "text": f"vad{idx}"}]}
+
+    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
+
+    r = client.post(
+        "/api/transcribe",
+        files={"file": ("x.wav", _make_wav_bytes(0.1), "audio/wav")},
+        data={"align": "false"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["text"] == "vad0 vad1"
+
+
+def test_transcribe_falls_back_to_fixed_chunking_when_vad_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_mod, "VAD_CHUNKING", True)
+    client = make_client(tmp_path=tmp_path)
+
+    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25), 0.0) for i in range(2)]
+    for p, _, _ in fake_chunks:
+        p.write_bytes(_make_wav_bytes(0.1))
+    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 50.0)
+    # VAD planning raises -> the pipeline must fall back to iter_chunks.
+    monkeypatch.setattr(main_mod, "_vad_plan", lambda *a, **_kw: (_ for _ in ()).throw(RuntimeError("vad down")))
+    monkeypatch.setattr(main_mod, "iter_chunks",
+                        lambda _s, _o, _c, _v, **_k: iter(fake_chunks))
+
+    async def fake_chunk(_client, _path, initial_prompt=None):
+        idx = int(_path.stem[1:])
+        return {"text": f"fix{idx}",
+                "segments": [{"start": 0.0, "end": 1.0, "text": f"fix{idx}"}]}
+
+    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
+
+    r = client.post(
+        "/api/transcribe",
+        files={"file": ("x.wav", _make_wav_bytes(0.1), "audio/wav")},
+        data={"align": "false"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["text"] == "fix0 fix1"
 
 
 # ── Cancel / abort (Task 2) ──────────────────────────────────────────────
