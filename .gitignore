@@ -7,13 +7,28 @@ data/
 node_modules/
 frontend/dist/
 frontend/.vite/
+# Stray Claude Code / timestamped session-transcript dumps (e.g.
+# 2026-06-26-033421-ffmpegpath.txt) must never be committed.
+frontend/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
 __pycache__/
 *.pyc
 .pytest_cache/
 build/
 dist/
-Qwen3-ASR/
+# Packaged distribution folders (build.bat app|shell|both).
+Qwen3-ASR*/
+
+# start.bat caches the conda env's python path here; regenerated on first run.
+.qwen3asr_python.cache
 
 # IDE
 .idea/
 .vscode/
+
+# AI assistant local files (patterns match at any depth)
+.claude/
+.mimosa/
+CLAUDE.md
+.cursor/
+.zcode/
+.aider*

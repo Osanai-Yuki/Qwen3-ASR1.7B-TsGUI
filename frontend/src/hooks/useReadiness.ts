@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchReadiness } from "../api";
+import { fetchReadiness, retryBoot } from "../api";
 import type { ReadinessResponse } from "../types";
 
 const POLL_MS = 800;
@@ -37,7 +37,12 @@ export function useReadiness() {
     cancelledRef.current = true;
     if (timer.current !== null) window.clearTimeout(timer.current);
     cancelledRef.current = false;
-    poll();
+    // A terminal phase="error" can never be left by polling alone — ask the
+    // backend to re-run the boot sequence first (no-op when healthy), then
+    // resume polling either way (covers backend-unreachable too).
+    retryBoot()
+      .catch(() => {})
+      .finally(() => poll());
   }, [poll]);
 
   useEffect(() => {

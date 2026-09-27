@@ -129,3 +129,49 @@ def clean_segments(segments: list[dict]) -> list[dict]:
             ns["text"] = cleaned
         out.append(ns)
     return out
+
+
+def _norm_with_map(text: str) -> tuple[str, list[int]]:
+    """Casefolded, whitespace-free view of ``text`` plus a map from each
+    normalized character back to its raw index."""
+    chars: list[str] = []
+    idx_map: list[int] = []
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            continue
+        chars.append(ch.casefold())
+        idx_map.append(i)
+    return "".join(chars), idx_map
+
+
+def seam_overlap(
+    prev_text: str,
+    new_text: str,
+    *,
+    min_overlap: int = 4,
+    max_overlap: int = 60,
+) -> tuple[int, int]:
+    """Detect duplicated content at the seam between two chunk transcripts.
+
+    Audio chunks overlap by CHUNK_OVERLAP seconds, and the time-based
+    segment dedup can miss when llama-server's segment timestamps are too
+    coarse — the overlap region then appears at the tail of one chunk AND
+    the head of the next (“会处于稳定状态会处于稳定状态”). This finds the
+    longest run (case/whitespace-insensitive) where the tail of
+    ``prev_text`` equals the head of ``new_text``.
+
+    Returns ``(raw_cut, norm_len)``: the raw index in ``new_text`` where the
+    non-duplicated content starts, and the overlap length in normalized
+    characters. ``(0, 0)`` means no overlap was found.
+    """
+    if not prev_text or not new_text:
+        return 0, 0
+    prev_norm, _ = _norm_with_map(prev_text)
+    new_norm, idx_map = _norm_with_map(new_text)
+    limit = min(len(prev_norm), len(new_norm), max_overlap)
+    for k in range(limit, min_overlap - 1, -1):
+        if prev_norm[-k:] == new_norm[:k]:
+            if k == len(new_norm):
+                return len(new_text), k  # whole chunk is a duplicate
+            return idx_map[k], k
+    return 0, 0

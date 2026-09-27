@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import struct
@@ -15,7 +16,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, Body
@@ -35,8 +36,9 @@ from .audio_chunk import (
     FFmpegMissingError,
 )
 from .resegment import resegment_words
-from .text_clean import clean_asr_text, clean_segments
+from .text_clean import clean_asr_text, clean_segments, seam_overlap
 from .history import HistoryStore
+from . import queue_api
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("asr")
@@ -221,6 +223,125 @@ class _LocalOnlyMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
+# ── Desktop-shell session guard ───────────────────────────────────────
+# When the app runs inside the WebView2 desktop shell (shell/shell_main.py,
+# SHELL_MODE=1), the loopback-origin check alone is not enough: any local
+# process could still call the API. The shell passes a one-time token via
+# ``?st=<token>``; the first matching request is answered with a 302 that
+# strips the token from the URL and sets an HttpOnly session cookie, and the
+# token is invalidated. Every subsequent request must carry the cookie.
+# Inert unless SHELL_MODE=1 + ASR_SHELL_TOKEN are set (kept as a mutable
+# module dict so tests can toggle it per-case).
+_shell_state = {
+    "enabled": os.environ.get("SHELL_MODE", "0") == "1",
+    "token": os.environ.get("ASR_SHELL_TOKEN", ""),
+    "session": secrets.token_urlsafe(32),
+    "handshake_done": False,
+}
+_SHELL_COOKIE = "asr_shell_session"
+
+
+class _ShellSessionMiddleware:
+    """Pure-ASGI cookie gate for desktop-shell mode (see _shell_state)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not (
+            _shell_state["enabled"] and _shell_state["token"]
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1")
+            for k, v in scope.get("headers", ())
+        }
+        cookies = {}
+        for part in headers.get("cookie", "").split(";"):
+            if "=" in part:
+                k, _, v = part.strip().partition("=")
+                cookies[k] = v
+        if cookies.get(_SHELL_COOKIE) and secrets.compare_digest(
+            cookies[_SHELL_COOKIE], _shell_state["session"]
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        # One-time handshake: ?st=<token> → 302 without the token + cookie.
+        params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+        st = (params.get("st") or [""])[0]
+        if (
+            st
+            and not _shell_state["handshake_done"]
+            and secrets.compare_digest(st, _shell_state["token"])
+        ):
+            _shell_state["handshake_done"] = True
+            rest = [(k, v) for k, vs in params.items() if k != "st" for v in vs]
+            location = scope.get("path", "/") + (
+                "?" + urlencode(rest) if rest else ""
+            )
+            cookie = (
+                f"{_SHELL_COOKIE}={_shell_state['session']}; "
+                "HttpOnly; SameSite=Strict; Path=/"
+            )
+            await send({
+                "type": "http.response.start",
+                "status": 302,
+                "headers": [
+                    (b"location", location.encode("latin-1")),
+                    (b"set-cookie", cookie.encode("latin-1")),
+                    (b"content-length", b"0"),
+                ],
+            })
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        await _LocalOnlyMiddleware._reject(send, "missing shell session")
+
+
+class _SecurityHeadersMiddleware:
+    """Adds CSP and hardening headers to every response.
+
+    The SPA ships no inline scripts (verified against frontend/dist), so
+    ``script-src 'self'`` blocks any injected script even if hostile ASR
+    text reached the DOM unescaped. blob: is needed by the local audio
+    player, data: by the favicon, 'unsafe-inline' styles by React style
+    attributes. Applied in both shell and plain-browser modes.
+    """
+
+    _HEADERS = [
+        (b"content-security-policy",
+         b"default-src 'self'; script-src 'self'; "
+         b"style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+         b"media-src 'self' blob:; connect-src 'self'; object-src 'none'; "
+         b"frame-ancestors 'none'; base-uri 'none'"),
+        (b"x-content-type-options", b"nosniff"),
+        (b"referrer-policy", b"no-referrer"),
+    ]
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                hdrs = list(message.get("headers", []))
+                existing = {k.lower() for k, _ in hdrs}
+                for k, v in self._HEADERS:
+                    if k not in existing:
+                        hdrs.append((k, v))
+                message = {**message, "headers": hdrs}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 class _UploadTooLarge(Exception):
     """Raised by the streaming uploader when a body exceeds the cap."""
 
@@ -373,10 +494,17 @@ def _is_gpu_backend_ready() -> bool:
 ASR_MODEL = str(ASR_MODELS_DIR / "Qwen3-ASR-1.7B-Q8_0.gguf")
 ASR_MMPROJ = str(ASR_MODELS_DIR / "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf")
 
+# Random per-process API key for the internal llama-server: loopback binding
+# alone leaves the inference endpoint callable by any local process. The key
+# only ever lives in this process and llama-server's argv.
+LLAMA_API_KEY = secrets.token_urlsafe(24)
+_LLAMA_HEADERS = {"Authorization": f"Bearer {LLAMA_API_KEY}"}
+
 runner = LlamaRunner(
     bin_path=str(PROJECT_ROOT / "bin" / "llama-server.exe"),
     host="127.0.0.1",
     port=8080,
+    api_key=LLAMA_API_KEY,
 )
 
 # ForcedAligner runs on CPU via CrispASR (no mmproj — that field is unused by
@@ -545,6 +673,7 @@ def _warmup_asr():
             f"{runner.base_url}/v1/audio/transcriptions",
             files={"file": ("warmup.wav", wav_bytes, "audio/wav")},
             data={"response_format": "json"},
+            headers=_LLAMA_HEADERS,
             timeout=60.0,
         )
         if r.status_code == 200:
@@ -685,7 +814,11 @@ def _boot_sequence():
 async def lifespan(app: FastAPI):
     boot_thread = threading.Thread(target=_boot_sequence, daemon=True)
     boot_thread.start()
+    # Serial batch-queue consumer (backend/queue_api.py). Runs on the app's
+    # event loop; cancelled on shutdown before llama-server is stopped.
+    queue_task = asyncio.create_task(queue_api.worker_loop())
     yield
+    queue_task.cancel()
     runner.stop()
 
 
@@ -694,7 +827,10 @@ app = FastAPI(lifespan=lifespan)
 # loopback-only guard (Host + Origin checks) replaces the previous wildcard
 # CORS policy, which let any website read transcripts/history, delete data,
 # and trigger transcription on a user's machine. See _LocalOnlyMiddleware.
+# Stack (outermost first): SecurityHeaders → LocalOnly → ShellSession → app.
+app.add_middleware(_ShellSessionMiddleware)
 app.add_middleware(_LocalOnlyMiddleware)
+app.add_middleware(_SecurityHeadersMiddleware)
 
 if not _BIND_IS_LOOPBACK:
     logger.warning(
@@ -725,6 +861,33 @@ async def health():
 async def readiness():
     with boot_lock:
         return dict(boot_state)
+
+
+@app.post("/api/readiness/retry")
+async def readiness_retry():
+    """Re-run the boot sequence after a terminal phase="error".
+
+    Boot failures (missing model files, llama-server startup timeout) leave
+    the backend in a terminal error state that polling /api/readiness can
+    never leave, so the boot overlay's Retry button posts here to actually
+    re-attempt the boot. No-op unless the current phase is "error"; the
+    sequence runs on a daemon thread and the client resumes polling.
+    """
+    with boot_lock:
+        if boot_state.get("switching"):
+            return {"error": "busy", "detail": "boot already in progress"}
+        if boot_state.get("phase") != "error":
+            return {"ok": True, "phase": boot_state.get("phase")}
+        # Claim the switching slot before spawning the thread so a rapid
+        # second click can't start a concurrent boot.
+        boot_state["switching"] = True
+    # Clean up a possibly half-started llama-server before re-trying.
+    try:
+        runner.stop()
+    except Exception:
+        pass
+    threading.Thread(target=_boot_sequence, daemon=True).start()
+    return {"ok": True}
 
 
 @app.get("/api/status")
@@ -863,6 +1026,7 @@ async def _transcribe_chunk(
         f"{runner.base_url}/v1/audio/transcriptions",
         files={"file": (chunk_path.name, audio_bytes, "audio/wav")},
         data=data,
+        headers=_LLAMA_HEADERS,
     )
     if resp.status_code != 200:
         raise RuntimeError(f"llama-server {resp.status_code}: {resp.text[:500]}")
@@ -1247,9 +1411,6 @@ async def transcribe(
                     continue
                 kept.append(shifted)
 
-            if kept:
-                all_segments.extend(kept)
-
             # Build text from kept segments when available (consistent with
             # the dedup'd segments), else fall back to the ASR text field.
             if kept:
@@ -1257,6 +1418,35 @@ async def transcribe(
             else:
                 text = (data.get("text") or "").strip()
             text = clean_asr_text(text)
+
+            # Text-level seam dedup: the time-based drop above misses when
+            # llama-server's segment timestamps are coarse, leaving the
+            # chunk-overlap content in both chunks ("…稳定状态稳定状态…").
+            # Trim the duplicated head here so the merged text, the aligner
+            # input and (below) the kept-segment timeline all stay clean.
+            if text and last_chunk_text:
+                cut, norm_k = seam_overlap(last_chunk_text, text)
+                if cut:
+                    logger.info(
+                        "Seam dedup: trimmed %d duplicated chars at %.1fs",
+                        norm_k, start_offset,
+                    )
+                    text = text[cut:].lstrip()
+                    # Drop leading kept segments fully inside the duplicate
+                    # (partial straddlers are kept whole - conservative).
+                    remaining = norm_k
+                    while kept and remaining > 0:
+                        seg_norm = sum(
+                            1 for c in kept[0].get("text", "") if not c.isspace()
+                        )
+                        if seg_norm and seg_norm <= remaining:
+                            remaining -= seg_norm
+                            kept.pop(0)
+                        else:
+                            break
+
+            if kept:
+                all_segments.extend(kept)
 
             if text:
                 all_text_parts.append(text)
@@ -1613,6 +1803,22 @@ async def audio_cache_get(name: str):
         return JSONResponse({"error": "not_found", "detail": "no such cached audio"}, status_code=404)
     return FileResponse(str(target), media_type="audio/mpeg", filename=safe_name)
 
+
+# Batch queue: wire the router/worker to this module's transcription
+# machinery via dependency injection (queue_api never imports main).
+queue_api.init(
+    data_dir=DATA_DIR,
+    transcribe_fn=transcribe,
+    stream_upload_to=_stream_upload_to,
+    upload_too_large=_UploadTooLarge,
+    safe_filename=_safe_filename,
+    safe_upload_suffix=_safe_upload_suffix,
+    allowed_suffixes=_ALLOWED_UPLOAD_SUFFIXES,
+    max_upload_bytes=MAX_UPLOAD_BYTES,
+    request_cancel=_request_cancel,
+    is_ready=lambda: bool(boot_state.get("ready")) and not boot_state.get("switching"),
+)
+app.include_router(queue_api.router)
 
 if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

@@ -9,6 +9,11 @@ os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("asr")
 
+# Immediate feedback before the heavy import below: on a cold start the
+# antivirus scan of site-packages can stall imports for many seconds with
+# no output, which users mistake for a hang (and Ctrl+C it).
+logger.info("Loading backend modules (first start may take a while)...")
+
 from backend.main import app
 
 

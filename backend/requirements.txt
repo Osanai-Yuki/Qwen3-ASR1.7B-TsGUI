@@ -7,5 +7,8 @@ numpy>=2.0.0
 # 测试依赖
 pytest>=9.0.0
 
+# 桌面外壳（shell/shell_main.py，WebView2 窗口）
+pywebview>=5.1
+
 # 打包依赖（build.bat 用 PyInstaller 生成发行版）
 pyinstaller>=6.0.0

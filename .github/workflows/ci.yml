@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  frontend:
+    name: Frontend typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+  backend:
+    name: Backend syntax + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compile-check all backend modules
+        run: python -m compileall -q backend
+      - name: Install lightweight test deps
+        run: pip install fastapi uvicorn httpx python-multipart pytest
+      # Best-effort: the pure-logic tests (text cleaning, resegmentation,
+      # middleware, cancel/abort, path-leak) run without llama-server / GPU /
+      # ffmpeg because the test harness mocks them. Tests needing the full
+      # conda env are skipped locally by the harness; failures here are
+      # informational so a missing optional dep doesn't red the build.
+      - name: Run test suite (SKIP_LLAMA=1)
+        env:
+          SKIP_LLAMA: "1"
+        run: python -m pytest backend/test_main.py -q
