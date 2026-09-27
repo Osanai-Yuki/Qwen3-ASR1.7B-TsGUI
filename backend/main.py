@@ -156,8 +156,7 @@ class _LocalOnlyMiddleware:
     1. Host header must be loopback when the server is loopback-bound. This
        defeats DNS rebinding, where a remote domain is repointed at 127.0.0.1
        so the browser treats its requests as same-origin (no Origin header,
-       no preflight) and reads responses freely.
-    2. If an Origin header is present it must be loopback or match the
+       no preflight) and reads responses freely.    2. If an Origin header is present it must be loopback or match the
        request's own Host (i.e. same-origin). A cross-origin page always sends
        Origin, so this blocks drive-by exfiltration of history/transcripts and
        CSRF-style DELETE/POST even when the body would otherwise be processed.
