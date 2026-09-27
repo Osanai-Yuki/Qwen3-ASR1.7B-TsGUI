@@ -16,14 +16,14 @@ export function ModelInfo({ health }: Props) {
 
   return (
     <div className="hidden md:flex items-center gap-2 min-w-0">
-      <span className="font-mono text-sm text-white/50 truncate max-w-[16rem]">
+      <span className="font-mono text-sm text-faint truncate max-w-[16rem]">
         {model}
       </span>
       <span
         className={`font-mono text-[11px] uppercase tracking-widest px-2 py-0.5 rounded-full border ${
           isGpu
             ? "border-amber-400/40 text-amber-400 bg-amber-400/10"
-            : "border-white/20 text-white/60 bg-white/5"
+            : "border-white/20 text-muted bg-white/5"
         }`}
         title={`Aligner backend: ${backend}`}
       >

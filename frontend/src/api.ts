@@ -13,6 +13,9 @@ import type {
   HistoryRecord,
   JobStatusResponse,
   ModelsResponse,
+  QueueItem,
+  QueueSortKey,
+  QueueStateResponse,
   ReadinessResponse,
   SwitchModelRequest,
   SwitchModelResponse,
@@ -30,6 +33,13 @@ export function fetchHealth(): Promise<HealthResponse> {
 
 export function fetchReadiness(): Promise<ReadinessResponse> {
   return getJson<ReadinessResponse>("/api/readiness");
+}
+
+/** POST /api/readiness/retry — re-run the boot sequence after phase="error".
+ * No-op when the backend is healthy or already booting. */
+export async function retryBoot(): Promise<{ ok: boolean } | ApiError> {
+  const res = await fetch("/api/readiness/retry", { method: "POST" });
+  return (await res.json()) as { ok: boolean } | ApiError;
 }
 
 export function fetchStatus(): Promise<JobStatusResponse> {
@@ -116,4 +126,84 @@ export async function switchModel(
     body: JSON.stringify(req),
   });
   return (await res.json()) as SwitchModelResponse | ApiError;
+}
+
+/* ── Batch queue (backend/queue_api.py) ────────────────────────── */
+
+/** GET /api/queue — whole queue state (poll; compare `version`). */
+export function fetchQueue(): Promise<QueueStateResponse> {
+  return getJson<QueueStateResponse>("/api/queue");
+}
+
+/** POST /api/queue/items — enqueue a batch of files for serial transcription. */
+export async function enqueueFiles(
+  files: File[],
+  align: boolean,
+): Promise<{ items: QueueItem[] } | ApiError> {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  form.append("align", String(align));
+  const res = await fetch("/api/queue/items", { method: "POST", body: form });
+  return (await res.json()) as { items: QueueItem[] } | ApiError;
+}
+
+/** POST /api/queue/reorder — ids must be a permutation of the queued items. */
+export async function reorderQueue(
+  ids: string[],
+): Promise<{ ok: boolean } | ApiError> {
+  const res = await fetch("/api/queue/reorder", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  return (await res.json()) as { ok: boolean } | ApiError;
+}
+
+/** POST /api/queue/sort — one-shot rule sort of the queued items. */
+export async function sortQueue(
+  key: QueueSortKey,
+  order: "asc" | "desc",
+): Promise<{ ok: boolean } | ApiError> {
+  const res = await fetch("/api/queue/sort", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, order }),
+  });
+  return (await res.json()) as { ok: boolean } | ApiError;
+}
+
+/** DELETE /api/queue/items/{id} — queued: remove; running: skip current. */
+export async function deleteQueueItem(
+  id: string,
+): Promise<{ ok: boolean; skipping: boolean } | ApiError> {
+  const res = await fetch(`/api/queue/items/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  return (await res.json()) as { ok: boolean; skipping: boolean } | ApiError;
+}
+
+/** POST /api/queue/items/{id}/retry — error/cancelled back to queued. */
+export async function retryQueueItem(
+  id: string,
+): Promise<{ ok: boolean } | ApiError> {
+  const res = await fetch(`/api/queue/items/${encodeURIComponent(id)}/retry`, {
+    method: "POST",
+  });
+  return (await res.json()) as { ok: boolean } | ApiError;
+}
+
+export async function pauseQueue(): Promise<{ ok: boolean; paused: boolean }> {
+  const res = await fetch("/api/queue/pause", { method: "POST" });
+  return (await res.json()) as { ok: boolean; paused: boolean };
+}
+
+export async function resumeQueue(): Promise<{ ok: boolean; paused: boolean }> {
+  const res = await fetch("/api/queue/resume", { method: "POST" });
+  return (await res.json()) as { ok: boolean; paused: boolean };
+}
+
+/** DELETE /api/queue/finished — drop all done/error/cancelled items. */
+export async function clearFinishedQueue(): Promise<{ cleared: number }> {
+  const res = await fetch("/api/queue/finished", { method: "DELETE" });
+  return (await res.json()) as { cleared: number };
 }

@@ -15,10 +15,7 @@ export function StatsPanel({ stats }: Props) {
   if (!stats) {
     return (
       <div>
-        <h2 className="font-mono text-xs uppercase tracking-widest text-white/45 mb-4">
-          Statistics
-        </h2>
-        <p className="font-mono text-sm text-white/40">
+        <p className="font-mono text-sm text-faint">
           Awaiting transcription.
         </p>
       </div>
@@ -48,7 +45,7 @@ export function StatsPanel({ stats }: Props) {
 
   return (
     <div className="animate-fade-in">
-      <h2 className="font-mono text-xs uppercase tracking-widest text-white/45 mb-4">
+      <h2 className="font-mono text-xs uppercase tracking-widest text-faint mb-4">
         Statistics
       </h2>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
@@ -57,10 +54,10 @@ export function StatsPanel({ stats }: Props) {
             key={row.label}
             className="flex flex-col font-mono text-xs p-3 rounded-xl bg-white/5 border border-white/8"
           >
-            <dt className="text-white/40 uppercase tracking-wider text-[10px]">
+            <dt className="text-faint uppercase tracking-wider text-2xs">
               {row.label}
             </dt>
-            <dd className="text-white/95 break-all mt-0.5">{row.value}</dd>
+            <dd className="text-white break-all mt-0.5">{row.value}</dd>
           </div>
         ))}
       </dl>
