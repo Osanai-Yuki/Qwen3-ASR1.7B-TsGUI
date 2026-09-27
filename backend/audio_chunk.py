@@ -1,4 +1,5 @@
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -8,6 +9,183 @@ from pathlib import Path
 
 class FFmpegMissingError(RuntimeError):
     pass
+
+
+# ffmpeg silencedetect output: [silence_start at 1.234] / [silence_end at 5.678]
+_SILENCE_RE = re.compile(r"\[silence_(start|end)\s+at\s+([\d.]+)\]")
+
+
+def _detect_silence(
+    input_path: Path,
+    noise_db: float = -30,
+    min_dur: float = 0.5,
+) -> list[tuple[float, float]]:
+    """Return [(silence_start, silence_end), ...] via ffmpeg silencedetect.
+
+    Silences that run to EOF are capped at ``float("inf")`` so the caller can
+    bound them against the known duration. Runs off the event loop (subprocess
+    + ffmpeg); raises on failure so the caller can fall back to fixed chunking.
+    """
+    ffmpeg = resolve_ffmpeg("ffmpeg")
+    cmd = [
+        ffmpeg, "-i", str(input_path),
+        "-af", f"silencedetect=noise={noise_db}dB:d={min_dur}",
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    intervals: list[tuple[float, float]] = []
+    current_start: float | None = None
+    for line in result.stderr.splitlines():
+        m = _SILENCE_RE.search(line)
+        if not m:
+            continue
+        kind, val = m.group(1), float(m.group(2))
+        if kind == "start":
+            current_start = val
+        elif kind == "end" and current_start is not None:
+            intervals.append((current_start, val))
+            current_start = None
+    if current_start is not None:
+        # Silence runs to EOF; cap sentinel at inf so the caller bounds it.
+        intervals.append((current_start, float("inf")))
+    return intervals
+
+
+def _vad_plan(
+    input_path: Path,
+    duration: float,
+    chunk_seconds: float,
+    *,
+    max_chunk_seconds: float | None = None,
+    long_silence: float = 1.0,
+    noise_db: float = -30,
+    min_silence_dur: float = 0.5,
+) -> list[tuple[float, float]]:
+    """Compute silence-based chunk boundaries: [(start, end), ...].
+
+    Groups speech segments (the complement of silence within [0, duration])
+    into chunks of roughly ``chunk_seconds``, splitting at silence boundaries.
+    A silence longer than ``long_silence`` is a natural break; a chunk whose
+    span would exceed ``max_chunk_seconds`` (default 1.5x chunk_seconds) is
+    closed early. Speech segments with no silence to split them (longer than
+    max_chunk_seconds) are split at fixed intervals as a fallback.
+
+    Pure planning: no WAV extraction, so the caller can get the chunk count
+    up front for progress reporting.
+    """
+    if chunk_seconds < 1.0:
+        raise ValueError(f"invalid chunk_seconds={chunk_seconds}")
+    if max_chunk_seconds is None:
+        max_chunk_seconds = chunk_seconds * 1.5
+
+    silence = _detect_silence(input_path, noise_db, min_silence_dur)
+    # Bound silence intervals to the known duration.
+    silence = [(s, min(e, duration)) for s, e in silence if s < duration]
+
+    # Speech segments = complement of silence within [0, duration].
+    speech: list[tuple[float, float]] = []
+    cursor = 0.0
+    for s, e in silence:
+        if s > cursor:
+            speech.append((cursor, s))
+        cursor = max(cursor, e)
+    if cursor < duration:
+        speech.append((cursor, duration))
+    if not speech:
+        return []
+
+    # Group speech segments into chunks.
+    groups: list[tuple[float, float]] = []
+    g_start = speech[0][0]
+    g_end = speech[0][1]
+    for seg_start, seg_end in speech[1:]:
+        gap = seg_start - g_end
+        span = seg_end - g_start
+        if span > max_chunk_seconds:
+            # Would exceed the size cap: close here, start a new chunk.
+            groups.append((g_start, g_end))
+            g_start = seg_start
+            g_end = seg_end
+        elif gap > long_silence:
+            # Long silence: a natural break between chunks.
+            groups.append((g_start, g_end))
+            g_start = seg_start
+            g_end = seg_end
+        else:
+            # Absorb the segment (and the short silence before it).
+            g_end = seg_end
+    groups.append((g_start, g_end))
+
+    # Fallback: split any group still too long (long speech, no silence).
+    plan: list[tuple[float, float]] = []
+    for c_start, c_end in groups:
+        c_dur = c_end - c_start
+        if c_dur <= max_chunk_seconds:
+            plan.append((c_start, c_end))
+            continue
+        n = max(1, math.ceil(c_dur / chunk_seconds))
+        sub = c_dur / n
+        for i in range(n):
+            s = c_start + i * sub
+            e = s + sub if i < n - 1 else c_end
+            plan.append((s, e))
+    return plan
+
+
+def iter_vad_chunks(
+    input_path: Path,
+    out_dir: Path,
+    chunk_seconds: float,
+    overlap: float = 0.0,
+    *,
+    duration: float | None = None,
+    plan: list[tuple[float, float]] | None = None,
+    max_chunk_seconds: float | None = None,
+    long_silence: float = 1.0,
+    noise_db: float = -30,
+    min_silence_dur: float = 0.5,
+) -> Iterator[tuple[Path, float, float]]:
+    """Yield ``(chunk_path, start_offset, prev_end)`` for silence-based chunks.
+
+    Like ``iter_chunks`` but splits at silence boundaries instead of on a fixed
+    grid, so speech is never cut mid-sentence. Chunks are non-overlapping and
+    separated by silence, so ``prev_end`` is the previous chunk's end (0.0 for
+    the first) — the same ``(chunk_path, start_offset, prev_end)`` contract as
+    ``iter_chunks``. Pass a pre-computed ``plan`` (from ``_vad_plan``) so the
+    caller can know the chunk count before streaming extraction.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if duration is None:
+        duration = probe_duration(input_path)
+    if duration <= 0:
+        raise RuntimeError("Could not determine audio duration")
+    if plan is None:
+        plan = _vad_plan(
+            input_path, duration, chunk_seconds,
+            max_chunk_seconds=max_chunk_seconds,
+            long_silence=long_silence,
+            noise_db=noise_db,
+            min_silence_dur=min_silence_dur,
+        )
+
+    MAX_PLAN = 6000
+    prev_end = 0.0
+    idx = 0
+    for c_start, c_end in plan:
+        if idx > MAX_PLAN:
+            raise ValueError(
+                f"audio too long to split: would exceed {MAX_PLAN} VAD chunks "
+                f"(duration={duration:.0f}s)"
+            )
+        c_dur = c_end - c_start
+        if c_dur <= 0:
+            continue
+        out_path = out_dir / f"vadchunk_{idx:04d}.wav"
+        extract_slice(input_path, out_path, c_start, c_dur)
+        if out_path.stat().st_size > 44:
+            yield (out_path, c_start, prev_end)
+        prev_end = c_end
+        idx += 1
 
 
 # Extensions treated as video when ffprobe-based detection is unavailable.

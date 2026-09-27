@@ -21,9 +21,6 @@ export function ExportBar({
 
   return (
     <div>
-      <h2 className="font-mono text-xs uppercase tracking-widest text-white/45 mb-4">
-        Export
-      </h2>
       <div className="grid grid-cols-5 gap-2">
         {SUBTITLE_FORMATS.map((f) => (
           <button

@@ -105,8 +105,23 @@ if exist "%ROOT%frontend\dist\index.html" (
 :: run.py also auto-opens the browser once the boot sequence is ready
 :: (set ASR_NO_BROWSER=1 to opt out).
 echo [2/2] Starting backend on http://127.0.0.1:8000 ...
+echo       Loading Python modules - the FIRST start can take a while
+echo       (antivirus scan). Please wait; do NOT press Ctrl+C or click
+echo       inside this window while it is loading.
 set CTX_SIZE=32768
 set CHUNK_SECONDS=25
 set KV_QUANT=q8_0
 "%PYEXE%" "%ROOT%run.py"
+set EXITCODE=%errorlevel%
+echo.
+if %EXITCODE% neq 0 (
+    echo [WARN] Backend exited with code %EXITCODE%.
+    echo        - "KeyboardInterrupt" in the traceback means the process
+    echo          received Ctrl+C ^(accidental keypress or a click inside a
+    echo          QuickEdit console selects text and can interrupt it^).
+    echo          Just run start.bat again.
+    echo        - For import/module errors, re-run setup.bat to repair the
+    echo          conda environment, or delete .qwen3asr_python.cache if
+    echo          the environment was recreated at a different path.
+)
 pause

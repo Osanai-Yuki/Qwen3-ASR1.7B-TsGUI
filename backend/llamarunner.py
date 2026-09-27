@@ -20,10 +20,14 @@ class LlamaRunner:
         bin_path: str,
         host: str = "127.0.0.1",
         port: int = 8080,
+        api_key: str | None = None,
     ):
         self.bin_path = Path(bin_path)
         self.host = host
         self.port = port
+        # Per-process bearer token passed to llama-server via --api-key so
+        # arbitrary local processes can't drive the inference endpoint.
+        self.api_key = api_key
         self.process: subprocess.Popen | None = None
         self.current_model: str | None = None
 
@@ -91,6 +95,8 @@ class LlamaRunner:
                 cmd += ["--no-mmproj-offload"]
         if self._kv_quant and self._kv_quant.lower() != "f16":
             cmd += ["--cache-type-k", self._kv_quant, "--cache-type-v", self._kv_quant]
+        if self.api_key:
+            cmd += ["--api-key", self.api_key]
         cmd.extend(self._extra_args)
         return cmd
 
@@ -182,10 +188,13 @@ class LlamaRunner:
         return text[-n_chars:]
 
     def _wait_until_ready(self, timeout: float) -> None:
+        # /health is exempt from llama-server's API-key check; send the
+        # bearer anyway so this also works if that exemption ever changes.
+        auth = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                r = httpx.get(f"{self.base_url}/health", timeout=2.0)
+                r = httpx.get(f"{self.base_url}/health", timeout=2.0, headers=auth)
                 if r.status_code == 200:
                     return
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
