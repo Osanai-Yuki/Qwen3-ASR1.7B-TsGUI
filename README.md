@@ -1,5 +1,7 @@
 # Qwen3-ASR Transcription App
 
+English | [简体中文](README.zh-CN.md)
+
 CUDA-accelerated automatic speech recognition using the Qwen3-ASR-1.7B GGUF model, with optional word-level forced alignment, batch transcription queue, multi-format subtitle export, real-time performance statistics, and a minimalist glass UI. Runs as a browser app or a WebView2 desktop shell.
 
 ## Features
