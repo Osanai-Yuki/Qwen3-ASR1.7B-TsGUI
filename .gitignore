@@ -7,8 +7,7 @@ data/
 node_modules/
 frontend/dist/
 frontend/.vite/
-# Stray Claude Code / timestamped session-transcript dumps (e.g.
-# 2026-06-26-033421-ffmpegpath.txt) must never be committed.
+# Timestamped session dumps some tooling writes into the working tree.
 frontend/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
 __pycache__/
 *.pyc
@@ -25,10 +24,11 @@ Qwen3-ASR*/
 .idea/
 .vscode/
 
-# AI assistant local files (patterns match at any depth)
+# Local tooling config, none of it part of the app
 .claude/
 .mimosa/
 CLAUDE.md
+AGENTS.md
 .cursor/
 .zcode/
 .aider*

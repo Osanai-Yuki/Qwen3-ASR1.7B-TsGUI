@@ -2,21 +2,25 @@
 
 [English](README.md) | 简体中文
 
-基于 CUDA 加速的自动语音识别应用，使用 Qwen3-ASR-1.7B GGUF 模型，支持可选的词级强制对齐、批量转写队列、多格式字幕导出、实时性能统计，以及极简玻璃质感界面。既可以作为浏览器应用运行，也可以作为 WebView2 桌面壳运行。
+在本地 NVIDIA 显卡上跑的语音转文字。模型是 llama-server 加载的 Qwen3-ASR-1.7B GGUF，输入音频或视频，输出 SRT、VTT、ASS、TXT 或 JSON。词级时间戳是可选项。界面既能在浏览器里用，也能装进一个 WebView2 窗口单独运行。
 
-## 功能特性
+## 功能说明
 
-- **音频与视频转写** — 支持音频（WAV、MP3、FLAC、OGG、M4A 等）与视频（MP4、MKV、MOV、AVI、WebM 等）上传；视频音轨会提取为 MP3 并缓存以便回放
-- **单文件与批量模式** — 既可逐个转写，也可将整个文件夹拖入持久化转写队列（支持暂停 / 恢复 / 重排 / 重试 / 跳过）
-- **音频分块** — 长音频按 25 秒分块并保留 1.5 秒重叠以适配上下文窗口；失败块自动重试并再切分，合并文本时对分块接缝处的重叠内容去重
-- **字幕级断句** — 分块产出的词通过打分模型（停顿、标点、语气词、行首尾规则）合并为字幕行，中文行宽单独收紧
-- **强制对齐（可选）** — 通过 GPU 后端（qwen-asr / Qwen3-ForcedAligner-0.6B）或 CPU 端 CrispASR DLL 获得词级时间戳，缺失时自动回退到 ASR 段级时间戳
-- **模型热切换** — 在界面中直接切换 `models/asr/` 下的 GGUF 模型，无需重启
-- **多格式导出** — SRT、VTT、ASS、TXT、JSON
-- **性能统计** — RTF、处理耗时、字符/词数、分块数
-- **GPU 加速** — 经 llama-server 全量 CUDA 卸载；按显存自适应的上下文/KV 预设，进程级 API key 保护
-- **多语言** — 自动语种检测
-- **极简界面** — 玻璃质感面板、语义化设计令牌、完整键盘导航与减弱动效支持
+输入可以是一个文件，也可以是一整个文件夹。音频支持 WAV、MP3、FLAC、OGG、M4A；视频支持 MP4、MKV、MOV、AVI、WebM、FLV、M4V、WMV、MPG、MPEG、TS、3GP、VOB、OGV。视频先把音轨抽成 MP3，抽出来的文件存进 `data/audio_cache/`，同一个视频再跑第二次就不用再过 ffmpeg。
+
+Qwen3-ASR 把音频编码成一长串多模态 token，大约每 10 秒 600 个，40 分钟的录音塞不进上下文窗口。所以长音频先切成 25 秒的块，相邻块留 1.5 秒重叠，每块单独转写，再按修正过的时间戳拼回去。某一块失败就先重试，重试仍失败就把它对半切开。拼接时接缝上重叠的那部分内容会被裁掉，不会重复出现。
+
+按时间硬切出来的块不适合直接当字幕，所以词流会再过一遍打分段，按停顿长度、标点、语气词、行首尾禁则重新断句，中文行的宽度另有一套更紧的限制。
+
+对齐是可选的，有自己的后端。GPU 走 `qwen-asr` 跑 Qwen3-ForcedAligner-0.6B，CPU 走 ctypes 调 CrispASR 的 DLL。两个都不是必需的，缺了就用 ASR 自带的段级时间戳，任务照样完成。
+
+另外几件事：
+
+- `models/asr/` 下的模型可以在界面里直接换，不用重启
+- 批量队列的状态会落盘，崩溃或关窗后下次启动接着跑
+- 每次任务报告 RTF、耗时、字符数、词数、分块数
+- 语种默认自动检测，也可以手动指定
+- 界面是玻璃质感面板，支持完整键盘导航和减弱动效
 
 ## 架构
 
@@ -26,323 +30,298 @@
         v
 后端 (Python FastAPI)
         |
-        +── llama-server          (Qwen3-ASR-1.7B GGUF, GPU)
+        +-- llama-server          (Qwen3-ASR-1.7B GGUF, GPU)
         |       ASR 推理，启动时拉起，进程级随机 API key
         |
-        +── 对齐器后端            (GPU: qwen-asr / CPU: CrispASR DLL)
+        +-- 对齐器后端            (GPU: qwen-asr / CPU: CrispASR DLL)
         |       词级强制对齐，按需运行
         |
-        +── 队列 worker           (串行 asyncio 任务)
-                持续消费持久化批量队列，复用 transcribe
-                流水线（重试 / 取消 / 对齐 / 历史）
+        +-- 队列 worker           (串行 asyncio 任务)
+                消费持久化的批量队列，复用 transcribe 的
+                重试 / 取消 / 对齐 / 历史链路
 ```
 
 | 组件 | 技术栈 | 职责 |
 |-----------|-------|------|
-| **llama-server** | C++ 二进制 (CUDA) | ASR 推理，`--api-key` 保护 |
-| **对齐器 (GPU)** | Python / qwen-asr | 基于 `models/aligner/official` 的词级时间戳 |
-| **CrispASR** | C++ DLL (CPU) | 经 `align_words` ABI 的强制对齐回退 |
-| **队列 worker** | asyncio 任务 | 串行批量转写，状态持久化于 `data/queue/` |
-| **后端** | Python 3.13 / FastAPI / httpx | API 网关、分块、编排、安全响应头 |
-| **前端** | React 19 / TypeScript / Vite / Tailwind | 界面、队列抽屉、统计、多格式导出 |
+| llama-server | C++ 二进制（CUDA） | ASR 推理，用 `--api-key` 保护 |
+| 对齐器（GPU） | Python / qwen-asr | 从 `models/aligner/official` 出词级时间戳 |
+| CrispASR | C++ DLL（CPU） | 经 `align_words` ABI 的对齐回退 |
+| 队列 worker | asyncio 任务 | 串行批量转写，状态在 `data/queue/` |
+| 后端 | Python 3.13 / FastAPI / httpx | API 网关、分块、编排、安全响应头 |
+| 前端 | React 19 / TypeScript / Vite / Tailwind | 界面、队列抽屉、统计、导出 |
 
 ## 环境要求
 
-- Windows 10/11
-- NVIDIA GPU，CUDA 12.4+
+- Windows 10 或 11
+- NVIDIA 显卡，CUDA 12.4 及以上
 - [Miniconda](https://docs.conda.io/en/latest/miniconda.html) 或 Anaconda
-- Node.js 22+（前端构建 / CI）
-- **ffmpeg** 在 `PATH` 上（分块与视频音轨提取）
-- `pywebview`（可选，仅桌面壳需要 — 已声明在 `requirements.txt`）
+- Node.js 22+，只有构建前端和跑 CI 时需要
+- `PATH` 上要有 **ffmpeg**，分块和抽音轨都靠它（conda 环境里自带）
+- `pywebview`，只有桌面壳需要，已在 `requirements.txt` 里
 
 ## 配置
 
-### GPU / 性能
+### GPU 与性能
 
-调参默认值**根据检测到的显存自动选择**（启动前设置环境变量即可覆盖任意一项）：
+上下文大小、KV 量化、卸载层数按显存自动选。启动时用 `nvidia-smi` 探测，探不到就按 8 GB 算。下面任何一项都能在启动前用环境变量覆盖。
 
 | 显存 | ctx_size | KV 量化 |
 |------|----------|---------|
-| ≤ 4.5 GB | 16384 | `q4_0` |
-| ≤ 8.5 GB | 32768 | `q8_0` |
-| > 8.5 GB | 32768 | `f16` |
-
-Qwen3-ASR 将音频编码为很长的多模态 token 序列（约每 10 秒音频 600 个 token），
-因此长输入会被**切分为短块**、逐块独立转写，再以修正后的时间戳拼回。
+| 4.5 GB 以下 | 16384 | `q4_0` |
+| 8.5 GB 以下 | 32768 | `q8_0` |
+| 8.5 GB 以上 | 32768 | `f16` |
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
-| `VRAM_GB` | 自动检测 | 覆盖驱动上表预设的显存检测。 |
+| `VRAM_GB` | 自动检测 | 跳过探测，直接告诉上表用这个值。 |
 | `CTX_SIZE` | 见上表 | llama-server 上下文窗口。 |
-| `KV_QUANT` | 见上表 | KV 缓存量化（`q8_0`、`q4_0`、`f16`）。 |
+| `KV_QUANT` | 见上表 | KV 缓存量化：`q8_0`、`q4_0`、`f16`。 |
 | `NGL` | `99` | 卸载到 GPU 的层数。 |
-| `THREADS` | 自动 | llama-server CPU 线程数。 |
-| `CHUNK_SECONDS` | `25` | 音频分块时长（秒）。 |
-| `CHUNK_OVERLAP` | `1.5` | 相邻块重叠（秒），让跨界词保有上下文。 |
+| `THREADS` | 自动 | llama-server 的 CPU 线程数。 |
+| `CHUNK_SECONDS` | `25` | 分块时长，秒。 |
+| `CHUNK_OVERLAP` | `1.5` | 相邻块的重叠秒数，让跨界的词保住上下文。设 `0` 就是紧挨着切。 |
 
 ### 转写
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
 | `ASR_TEMPERATURE` | `0` | 传给 llama-server 的采样温度。 |
-| `ASR_LANGUAGE` | _(空)_ | 指定语言提示，代替自动检测。 |
-| `ASR_MAX_RETRIES` | `2` | 每块失败重试次数，超过后触发再切分。 |
-| `ASR_RESPLIT` | `1` | 失败块二分再切直至通过（设 `0` 关闭）。 |
-| `ASR_PROMPT_MAX_CHARS` | `200` | 块间携带提示词的最大字符数。 |
+| `ASR_LANGUAGE` | _(空)_ | 指定语种，不走自动检测。 |
+| `ASR_MAX_RETRIES` | `2` | 每块的重试次数，用完就触发再切分。 |
+| `ASR_RESPLIT` | `1` | 失败块二分到通过为止。设 `0` 则直接放弃这块。 |
+| `ASR_PROMPT_MAX_CHARS` | `200` | 从上一块带到下一块的提示字符数。 |
+
+### CPU 对齐器
+
+CrispASR 每次调用都要加载一遍对齐模型，所以多个块用线程池并行对齐（ctypes 在 C 调用期间释放 GIL，线程是真并行）。每次并发调用约占 262 MB 模型缓冲，这就是 worker 数要设上限的原因。
+
+| 变量 | 默认值 | 说明 |
+|----------|---------|-------------|
+| `ALIGN_N_THREADS` | `4` | 单次对齐调用用的线程数。 |
+| `ALIGN_MAX_WORKERS` | `3` | 并发对齐数，会被夹到 1–4。 |
+| `ALIGN_MAX_CHARS` | `400` | 超过这个长度的文本在对齐前截断。对齐器的注意力矩阵随序列长度平方增长，模型一旦幻觉，吐出的文本足够把内存吃光。 |
 
 ### 限额与缓存
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
-| `ASR_MAX_UPLOAD_BYTES` | 2 GiB | 单文件上传上限（前端同步校验）。 |
-| `ASR_MAX_AUDIO_DURATION` | 12 小时 | 接受的最大媒体时长。 |
-| `ASR_MAX_ALIGN_TEXT_CHARS` | `50000` | 单次对齐请求的文本上限。 |
-| `ASR_AUDIO_CACHE_MAX_BYTES` | 4 GiB | 音轨提取缓存（`data/audio_cache/`）的 LRU 容量上限。 |
+| `ASR_MAX_UPLOAD_BYTES` | 2 GiB | 单文件上传上限，前端同步校验。 |
+| `ASR_MAX_AUDIO_DURATION` | 12 小时 | 接受的最长媒体。 |
+| `ASR_MAX_ALIGN_TEXT_CHARS` | `50000` | `/api/align` 单请求的文本上限。 |
+| `ASR_AUDIO_CACHE_MAX_BYTES` | 4 GiB | `data/audio_cache/` 的 LRU 容量上限。 |
 | `ASR_AUDIO_CACHE_MAX_ENTRIES` | `200` | 同一缓存的条目数上限。 |
 
 ### 批量队列
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
-| `ASR_QUEUE_MAX_ENTRIES` | `500` | 队列最大条目数。 |
-| `ASR_QUEUE_MAX_BYTES` | 16 GiB | 暂存上传总大小上限。 |
+| `ASR_QUEUE_MAX_ENTRIES` | `500` | 队列条目上限。 |
+| `ASR_QUEUE_MAX_BYTES` | 16 GiB | 暂存上传的总量上限。 |
 
 ### 服务器与桌面壳
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
-| `HOST` | `127.0.0.1` | 绑定地址。设为 `0.0.0.0` 可在可信局域网共享（无鉴权 — 仅在可信网络暴露）。 |
-| `ASR_ALLOWED_HOSTS` | _(空)_ | 局域网共享时允许的 Host 名（逗号分隔）。留空 = 非回环绑定时允许任意 Host；路人浏览器仍会被 Origin/Sec-Fetch-Site 检查拦截。 |
-| `SKIP_LLAMA` | `0` | 设为 `1` 时不拉起 llama-server（UI 开发 / 单元测试模式）。 |
-| `ASR_NO_BROWSER` | `0` | 设为 `1` 时启动后不自动打开浏览器。 |
-| `ALIGNER_BACKEND` | `gpu` | `gpu`（qwen-asr，需要 torch + `models/aligner/official`）或 `cpu`（CrispASR DLL）。 |
-| `SHELL_MODE` / `ASR_SHELL_TOKEN` | — | 由打包后的桌面壳内部设置，用于启用其 HttpOnly Cookie 会话握手。请勿手动设置。 |
-| `PORT` | 壳自动选择 | 桌面壳的回环端口（开发用）。 |
-| `ASR_SHELL_SMOKE` / `ASR_SHELL_DEBUG` | — | 桌面壳开发旋钮：N 秒后自动关窗 / 详细日志。 |
+| `HOST` | `127.0.0.1` | 绑定地址。设成 `0.0.0.0` 就把应用开放到局域网，且没有任何鉴权，只在可信网络上这么干。 |
+| `PORT` | `8000` | 监听端口。桌面壳会自己挑一个空闲的回环端口。 |
+| `ASR_ALLOWED_HOSTS` | _(空)_ | 绑到非回环地址时允许的 `Host`，逗号分隔。留空表示任意 Host 都收，路人浏览器仍然会被 Origin 和 `Sec-Fetch-Site` 检查拦下。想把这个局域网共享钉在一台机器名上就填它。 |
+| `SKIP_LLAMA` | `0` | 设 `1` 则不拉起 llama-server，做界面开发和跑测试时用。 |
+| `ASR_NO_BROWSER` | `0` | 设 `1` 则启动后不自动开浏览器。 |
+| `ALIGNER_BACKEND` | `gpu` | `gpu` 需要 torch 和 `models/aligner/official`；`cpu` 用 CrispASR DLL。填了不认识的值会退回 `cpu`。 |
+| `SHELL_MODE`、`ASR_SHELL_TOKEN` | 未设置 | 由打包后的桌面壳内部设置，启用它的 HttpOnly Cookie 握手。不要手动填。 |
+| `ASR_SHELL_SMOKE`、`ASR_SHELL_DEBUG` | 未设置 | 桌面壳的开发开关：N 秒后自动关窗、详细日志。 |
 
-所有响应均附带 CSP（`script-src 'self'`、`media-src blob:`）、`nosniff` 与 `no-referrer` 头；非回环绑定还会执行来源/Host 检查。
+所有响应都带 CSP，`script-src 'self'` 加 `media-src blob:`，另有 `nosniff` 和 `no-referrer`。Origin 与 Host 检查只在非回环绑定上生效，因为同源跑的浏览器应用本来也不会有值得据此判断的 `Sec-Fetch-Site`。
 
 ## 强制对齐
 
-词级时间戳通过将 ASR 转写文本对齐回音频获得。对齐是**可选的** —
-没有可用后端时，系统自动回退到 ASR 段级时间戳。
+词级时间戳是把转写文本对齐回音频得到的。用 `ALIGNER_BACKEND` 选后端。
 
-有两个后端可选（`ALIGNER_BACKEND`）：
+**GPU**（默认）经 `qwen-asr` transformers 栈跑 Qwen3-ForcedAligner。需要 `torch`、`transformers`、`qwen-asr`，这三个默认都不装：
 
-1. **GPU（默认）** — 经 `qwen-asr` transformers 栈运行
-   Qwen3-ForcedAligner。需要 `torch`、`transformers`、`qwen-asr`
-   （默认不安装；可装进 conda 环境或嵌入式运行时：
-   `pip install qwen-asr torch transformers`），并将模型放到：
-   ```
-   models/aligner/official/          # Qwen3-ForcedAligner-0.6B (safetensors)
-   ```
+```
+pip install qwen-asr torch transformers
+```
 
-2. **CPU** — 经 `bin/crispasr/crispasr.dll` 调用
-   [CrispASR](https://github.com/CrispStrobe/CrispASR) C++ 运行时，配合 GGUF
-   `models/aligner/qwen3-forced-aligner-0.6b-q8_0.gguf`（约 940 MB，来自
-   [cstr/qwen3-forced-aligner-0.6b-GGUF](https://huggingface.co/cstr/qwen3-forced-aligner-0.6b-GGUF)）。
-   不占显存，不影响 ASR 模型。该 GGUF 的 `qwen3asr` 架构标准 llama-server
-   并不支持，因此需要这个定制 DLL。
+模型文件放在 `models/aligner/official/`，safetensors 格式，约 1.8 GB。GPU 后端在加载对齐器前会把 ASR 模型从显存里卸掉，所以 4 GB 的卡能先后跑两者，不能同时跑。
 
-后端在启动时探测所选后端，并在依赖或文件缺失时优雅降级
-（GPU → CPU → ASR 段级时间戳）。
+**CPU** 经 `bin/crispasr/crispasr.dll` 调 [CrispASR](https://github.com/CrispStrobe/CrispASR) 的 C++ 运行时，配 `models/aligner/qwen3-forced-aligner-0.6b-q8_0.gguf`（约 940 MB，来自 [cstr/qwen3-forced-aligner-0.6b-GGUF](https://huggingface.co/cstr/qwen3-forced-aligner-0.6b-GGUF)）。不占显存，也不影响 ASR 模型。之所以需要这个定制 DLL，是因为标准 llama-server 不支持 `qwen3asr` 这个 GGUF 架构。
+
+不管选哪个，启动时都会探测一次；依赖或文件缺失时按 GPU、CPU、ASR 段级时间戳的顺序往下退。
 
 ## 批量转写队列
 
-多个文件可以入队，由串行 worker 逐个转写，保证 GPU 同一时刻只处理一个任务。
+文件由一个串行 worker 逐个转写，因为一块显卡同时只能装一个模型。
 
-- **入队** — 上传弹窗的 *Batch* 标签页（文件夹选择 / 多选），或繁忙时直接把
-  多个文件拖到窗口任意位置；每个文件以随机 ID 暂存于 `data/queue/uploads/`。
-- **管理** — 拖拽或键盘重排、按名称/大小/入队时间排序、暂停/恢复 worker、
-  重试失败项、清理已完成项。删除正在运行的项会在下一个分块边界协作式取消。
-- **持久化** — 状态保存在 `data/queue/queue.json`（原子写、版本号便于高效轮询）；
-  中断的运行在下次启动时回到 *queued* 状态，完成的任务进入常规历史记录。
+入队从上传弹窗的 *Batch* 标签页操作（选文件夹或多选），或者在任务跑着的时候把多个文件拖到窗口任意位置。每个文件以一个随机 id 暂存到 `data/queue/uploads/`。
+
+队列抽屉支持拖拽和键盘重排、按名称/大小/入队时间排序、暂停恢复 worker、重试失败项、清理已完成项。删掉正在跑的那一项，它会在下一个分块边界被协作式取消。
+
+状态存在 `data/queue/queue.json`，原子写，带一个自增的版本号好让轮询便宜一些。崩溃或关窗打断的运行，下次启动时回到 *queued*。完成的进常规历史。
 
 ## 项目结构
 
 ```
-Qwen3-ASR17B-TsGUI/
-├── bin/                                  # llama-server 二进制 + CUDA DLL + CrispASR（已 gitignore）
+Qwen3-ASR1.7B-TsGUI/
+├── bin/                                  # llama-server 二进制 + CUDA DLL + CrispASR（gitignore）
 │   └── crispasr/crispasr.dll             # CPU 对齐器运行时
-├── models/                               # GGUF + 对齐器模型文件（已 gitignore）
-│   ├── asr/                              # Qwen3-ASR GGUF（可经 /api/models 热切换）
+├── models/                               # GGUF 与对齐器模型（gitignore）
+│   ├── asr/                              # Qwen3-ASR GGUF，可经 /api/models 热切换
 │   └── aligner/                          # 对齐器 GGUF（CPU）+ official/（GPU）
 ├── backend/
-│   ├── main.py                           # FastAPI 应用（转写 + 对齐 + 模型 + 历史 + 缓存）
+│   ├── main.py                           # FastAPI 应用：转写、对齐、模型、历史、缓存
 │   ├── llamarunner.py                    # llama-server 子进程管理（API key、健康检查）
-│   ├── queue_api.py                      # 批量队列路由 + 串行 worker
-│   ├── queue_store.py                    # 持久化队列状态（原子 JSON、崩溃恢复）
+│   ├── queue_api.py                      # 队列路由 + 串行 worker
+│   ├── queue_store.py                    # 队列状态落盘，原子 JSON，崩溃恢复
 │   ├── forced_aligner.py                 # 经 CrispASR DLL 的 CPU 对齐器
 │   ├── aligner_gpu.py                    # 经 qwen-asr 的 GPU 对齐器
-│   ├── audio_chunk.py                    # ffmpeg 分块（定长 + VAD 规划辅助）
-│   ├── resegment.py                      # 词级 → 字幕段的打分/合并
-│   ├── text_clean.py                     # ASR 模板伪影清理 + 分块接缝去重
-│   ├── history.py                        # 逐任务 JSON 历史（data/history/）
-│   ├── test_main.py                      # 核心 API 测试（CI 以 mock 运行，SKIP_LLAMA=1）
-│   ├── test_queue.py / test_vad.py       # 队列、分块测试
-│   ├── test_subtitles.py / test_shell.py # 断句、壳/安全测试
-│   └── requirements.txt
+│   ├── audio_chunk.py                    # ffmpeg 分块（其中的 VAD 规划器尚未接入流水线）
+│   ├── resegment.py                      # 词流转字幕段的打分与合并
+│   ├── text_clean.py                     # ASR 伪影清理、分块接缝去重
+│   ├── history.py                        # 逐任务 JSON 历史，data/history/
+│   ├── requirements.txt
+│   └── test_*.py                         # main、queue、vad、subtitles、shell
 ├── frontend/
+│   ├── index.html
+│   ├── vite.config.ts
 │   └── src/
 │       ├── App.tsx                       # 布局、单文件/批量状态机、拖放
-│       ├── api.ts                        # fetch 封装（转写、队列、模型、历史）
+│       ├── api.ts                        # transcribe、queue、models、history 的 fetch 封装
 │       ├── types.ts                      # API 响应接口
-│       ├── hooks/                        # useReadiness / useJobStatus / useQueue / useElapsed
-│       ├── utils/                        # subtitle.ts, format.ts, fileTypes.ts, audioClock.ts
-│       └── components/                   # UploadZone, BatchUploadZone, QueuePanel, BootOverlay,
-│                                         # TranscriptPanel, AudioPlayer, ProgressBar, StatsPanel,
-│                                         # ExportBar, HistoryPanel, ModelInfo, icons
+│       ├── index.css                     # Tailwind 入口、设计令牌
+│       ├── hooks/                        # useReadiness、useJobStatus、useQueue、useElapsed
+│       ├── utils/                        # subtitle、format、fileTypes、audioClock
+│       └── components/                   # UploadZone、BatchUploadZone、QueuePanel、BootOverlay、
+│                                         # TranscriptPanel、AudioPlayer、ProgressBar、StatsPanel、
+│                                         # ExportBar、HistoryPanel、ModelInfo、icons
 ├── shell/
-│   ├── shell_main.py                     # pywebview/WebView2 桌面壳（进程内后端）
-│   ├── asr-shell.spec                    # PyInstaller 配置（无窗口 asr-shell.exe）
-│   └── start-shell.bat                   # 桌面壳开发启动器
+│   ├── shell_main.py                     # pywebview/WebView2 桌面壳，后端跑在进程内
+│   ├── asr-shell.spec                    # PyInstaller 配置（窗口模式 asr-shell.exe）
+│   └── start-shell.bat                   # 开发启动器
 ├── tools/
-│   ├── build_embed.py                    # 嵌入式 Python 分发构建器
-│   └── subcompare.py                     # 字幕 WER/CER 对照（SRT/VTT）
-├── .github/workflows/ci.yml              # CI：前端 typecheck+build，后端 mock 测试
-├── environment.yml                       # Conda 环境定义
-├── requirements-runtime.txt              # 嵌入式运行时依赖（不含开发/测试依赖）
-├── run.py                                # 入口：uvicorn + 轮询 readiness 后打开浏览器
+│   ├── build_embed.py                    # 嵌入式 Python 分发构建
+│   └── subcompare.py                     # 字幕 WER/CER 对照
+├── data/                                 # 运行期状态（gitignore）：history、queue、
+│                                         # audio_cache、chunk_cache、jobs、logs、webview_profile
+├── .github/workflows/ci.yml              # 前端 typecheck+build，后端 mock 测试
+├── environment.yml                       # conda 环境定义
+├── requirements-runtime.txt              # 嵌入式运行时依赖，不含开发/测试依赖
+├── run.py                                # 入口：uvicorn，就绪后再开浏览器
 ├── asr-app.spec                          # PyInstaller 配置（浏览器模式 asr-app.exe）
-├── setup.bat                             # 一键环境安装
-├── start.bat                             # 一键启动（开发、浏览器模式）
+├── setup.bat                             # 建 conda 环境并装依赖
+├── start.bat                             # 开发启动，浏览器模式
 ├── build.bat                             # build.bat [app|shell|both]
 ├── build-embed.bat                       # 一键嵌入式构建
-└── README.md
+├── README.md
+└── README.zh-CN.md
 ```
 
-## 环境安装
-
-### 一键安装
+## 安装
 
 ```powershell
 setup.bat
 ```
 
-创建 conda 环境、安装全部依赖并检查必需文件。
-
-### 手动安装
-
-#### 1. Conda 环境
+建好 conda 环境、装完依赖，并检查应用需要的文件是否就位。想手动装：
 
 ```powershell
 conda env create -f environment.yml
 conda activate qwen3asr
-```
-
-#### 2. 前端依赖
-
-```powershell
 cd frontend
 npm install
 ```
 
-#### 3. llama-server 二进制
-
-从 [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases/tag/b9637) 下载
-`llama-b9637-bin-win-cuda-12.4-x64.zip`，解压到 `bin/`。
+然后从 [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases/tag/b9637) 下载 `llama-b9637-bin-win-cuda-12.4-x64.zip`，解压到 `bin/`。
 
 ## 运行
 
-### 浏览器模式（开发）
+浏览器模式，开发时一般用这个：
 
 ```powershell
 start.bat
 ```
 
-激活 conda 环境、构建前端并启动服务。浏览器打开 **http://localhost:8000**。
+它会激活 conda 环境、构建前端，然后在 http://localhost:8000 提供服务。
 
-### 桌面壳（开发）
+桌面壳把后端跑在一个 1280×820 的 WebView2 窗口进程里：
 
 ```powershell
 shell\start-shell.bat
 ```
 
-在 1280×820 的 WebView2 窗口（pywebview）内以进程方式运行后端：随机回环端口、
-一次性令牌握手换取 HttpOnly Cookie、将外部 URL 转交系统浏览器的导航守卫、
-单实例互斥锁，日志位于 `data/logs/asr.log`。WebView2 不可用时回退系统浏览器。
+它挑一个随机回环端口，给页面传一次性令牌，页面拿令牌换 HttpOnly Cookie；窗口里的外部链接交给系统浏览器打开，不做站内跳转；并且持有一个命名互斥量，第二次启动不会跟端口、队列和浏览器配置打架。日志在 `data/logs/asr.log`。WebView2 不可用时退回系统浏览器。
 
-### 手动启动
+不走批处理的话：
 
 ```powershell
 conda activate qwen3asr
 cd frontend && npm run build && cd ..
-
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-### 开发模式
+改前端要热更新，就一个终端 `SKIP_LLAMA=1` 起 API，另一个终端 `npm run dev`。Vite 会把 `/api` 代理到 8000。
 
 ```powershell
-# 终端 1：后端（跳过 llama-server，UI 开发用）
+# 终端 1
 conda activate qwen3asr
 $env:SKIP_LLAMA = "1"
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
-# 终端 2：前端开发服务器（热更新）
+# 终端 2
 cd frontend
 npm run dev
 ```
 
-Vite 开发服务器将 `/api` 请求代理到 8000 端口的后端。
-
-### 打包构建
+### 打包
 
 ```powershell
-build.bat app      # PyInstaller → Qwen3-ASR\        (asr-app.exe，系统浏览器界面)
-build.bat shell    # PyInstaller → Qwen3-ASR-Shell\  (asr-shell.exe，WebView2 窗口)
-build.bat both     # 以上两者
-build-embed.bat    # tools/build_embed.py → Qwen3-ASR-Embed\
-                   # 嵌入式 Python 3.12 运行时，不经 PyInstaller；源码可编辑且
-                   # pip 可用，可用 runtime\python.exe -m pip install qwen-asr torch
-                   # transformers 就地恢复 GPU 对齐
+build.bat app      # PyInstaller，Qwen3-ASR\asr-app.exe（系统浏览器）
+build.bat shell    # PyInstaller，Qwen3-ASR-Shell\asr-shell.exe（WebView2 窗口）
+build.bat both
+build-embed.bat    # tools/build_embed.py 输出到 Qwen3-ASR-Embed\
 ```
 
-## API 端点
+嵌入式那份不是 PyInstaller 打的包。它带一个独立的 Python 3.12 运行时，源码保持可编辑，`pip` 也能用，所以 GPU 对齐的依赖可以事后补进去：
+
+```powershell
+runtime\python.exe -m pip install qwen-asr torch transformers
+```
+
+## API
 
 | 方法 | 路径 | 说明 |
 |--------|------|-------------|
-| `GET` | `/api/health` | `{ backend, llama_server, aligner_available, aligner_running, aligner_backend }` |
-| `GET` | `/api/readiness` | 启动序列各阶段（模型加载 / 预热 / 对齐器检查） |
-| `POST` | `/api/readiness/retry` | 启动终态失败后重新执行启动序列 |
-| `GET` | `/api/status` | 当前任务状态 `{ status, progress, message }`（含 `cancelled`） |
-| `POST` | `/api/transcribe` | 上传音频/视频，返回 `{ text, segments[], stats, history_id }` |
-| `POST` | `/api/abort` | 在下一个分块边界取消正在进行的转写 |
-| `POST` | `/api/align` | 独立强制对齐（音频 + 文本 → 词级时间戳） |
-| `GET` | `/api/models` | 列出 `models/asr/` 下的 GGUF + 当前模型 + 调参 |
-| `POST` | `/api/models/switch` | 热切换已加载的 ASR 模型（忙时拒绝） |
-| `GET` | `/api/history` / `GET·DELETE /api/history/{hid}` / `DELETE /api/history` | 历史列表 / 单条 / 删除 / 清空 |
-| `GET` | `/api/audio-cache` / `DELETE /api/audio-cache` | 音轨缓存列表 / 清空 |
-| `GET` | `/api/audio-cache/{name}` | 流式返回缓存音频（驱动内置播放器） |
-| `POST` | `/api/queue/items` | 批量入队（multipart，多文件） |
-| `GET` | `/api/queue` | 队列快照 `{ items[], paused, active_id, version }` |
-| `POST` | `/api/queue/reorder` / `/api/queue/sort` | 手动重排 / 规则排序 |
-| `DELETE` | `/api/queue/items/{qid}` | 移除条目；若正在运行则协作式取消（跳过） |
-| `POST` | `/api/queue/items/{qid}/retry` | 重新入队失败/已取消的条目 |
-| `POST` | `/api/queue/pause` / `/api/queue/resume` | 暂停 / 恢复 worker |
-| `DELETE` | `/api/queue/finished` | 清空已完成/已取消条目 |
+| `GET` | `/api/health` | `backend`、`llama_server`、`aligner_available`、`aligner_running`、`aligner_backend` |
+| `GET` | `/api/readiness` | 启动序列各阶段：模型加载、预热、对齐器检查 |
+| `POST` | `/api/readiness/retry` | 启动终态失败后重跑一遍启动序列 |
+| `GET` | `/api/status` | 当前任务的 `status`、`progress`、`message` |
+| `POST` | `/api/transcribe` | 上传媒体，返回 `text`、`segments[]`、`stats`、`history_id` |
+| `POST` | `/api/abort` | 在下一个分块边界取消当前转写 |
+| `POST` | `/api/align` | 独立对齐，音频加文本进，词级时间戳出 |
+| `GET` | `/api/models` | `models/asr/` 下的 GGUF、当前模型、调参 |
+| `POST` | `/api/models/switch` | 热切换 ASR 模型，忙的时候拒绝 |
+| `GET` | `/api/history` | 历史列表 |
+| `GET`、`DELETE` | `/api/history/{hid}` | 单条记录 |
+| `DELETE` | `/api/history` | 清空历史 |
+| `GET`、`DELETE` | `/api/audio-cache` | 音轨缓存的列表 / 清空 |
+| `GET` | `/api/audio-cache/{name}` | 流式返回某个缓存文件，内置播放器用 |
+| `POST` | `/api/queue/items` | 入队（multipart，一次可带多个文件） |
+| `GET` | `/api/queue` | 快照：`items[]`、`paused`、`active_id`、`version` |
+| `POST` | `/api/queue/reorder`、`/api/queue/sort` | 手动重排 / 规则排序 |
+| `DELETE` | `/api/queue/items/{qid}` | 移除；该项在跑就顺带取消 |
+| `POST` | `/api/queue/items/{qid}/retry` | 把失败或已取消的项重新入队 |
+| `POST` | `/api/queue/pause`、`/api/queue/resume` | worker 开关 |
+| `DELETE` | `/api/queue/finished` | 清掉已完成和已取消的项 |
 
-### 转写参数
-
-| 字段 | 类型 | 默认 | 说明 |
-|-------|------|---------|-------------|
-| `file` | file | 必填 | 音频或视频文件 |
-| `align` | bool | `false` | 启用强制对齐以获得词级时间戳 |
-
-### curl 转写示例
+`/api/transcribe` 收一个必填的 `file`，加一个可选的布尔 `align`，默认 `false`。
 
 ```powershell
-# 基础转写
 curl -X POST http://localhost:8000/api/transcribe -F "file=@audio.wav"
-
-# 带强制对齐
 curl -X POST http://localhost:8000/api/transcribe -F "file=@audio.wav" -F "align=true"
-
-# 批量入队
 curl -X POST http://localhost:8000/api/queue/items -F "files=@a.mp3" -F "files=@b.mp4"
 ```
 
-### 响应格式
+响应形如：
 
 ```json
 {
@@ -370,48 +349,52 @@ curl -X POST http://localhost:8000/api/queue/items -F "files=@a.mp3" -F "files=@
 ## 测试
 
 ```powershell
-# 后端测试（单元测试时跳过 llama-server 拉起）
 conda activate qwen3asr
 $env:SKIP_LLAMA = "1"
-python -m pytest backend\test_main.py -v                              # 核心 API（CI 以 mock 运行）
-python -m pytest backend\test_queue.py backend\test_vad.py -v         # 队列 + 分块
-python -m pytest backend\test_subtitles.py backend\test_shell.py -v   # 断句 + 安全
+python -m pytest backend\test_main.py -v
+python -m pytest backend\test_queue.py backend\test_vad.py -v
+python -m pytest backend\test_subtitles.py backend\test_shell.py -v
 
-# 前端类型检查 + 生产构建
 cd frontend
 npm run typecheck
 npm run build
 ```
 
-CI（`.github/workflows/ci.yml`）在每次 push/PR 时以 Node 22 运行前端
-typecheck/build，以 Python 3.13 运行后端 `compileall` + mock 版 `test_main.py`。
+`test_main.py` 把 llama-server、ffmpeg 和对齐器都 mock 掉了，没有显卡也能跑。CI（`.github/workflows/ci.yml`）在每次 push 和 PR 时用 Node 22 跑前端 typecheck 与构建，用 Python 3.13 跑 `compileall` 加那份 mock 测试。
 
-## 工具
+## 字幕对照
 
 ```powershell
-python tools\subcompare.py ref.srt hyp.srt            # WER / CER / 时间戳漂移
-python tools\subcompare.py ref.srt hyp.srt --html report.html
+python tools\subcompare.py ref.srt hyp.srt
+python tools\subcompare.py ref.srt hyp.vtt --html report.html
+python tools\subcompare.py ref.srt hyp.srt --min-iou 0.3
 ```
 
-`subcompare.py` 解析 SRT/VTT（自动探测编码），按时间段配对片段，以 TUI 表格、
-HTML 报告或 JSON 输出 WER、CER 与起止时间漂移 — 便于 A/B 对比 ASR 或断句改动。
+`subcompare.py` 解析 SRT、VTT、ASS，编码自己猜，按时间段配对片段，在终端输出 WER、CER 与起止时间漂移；`--html` 把同一份结果写成 HTML 报告，`--min-iou` 把时间重叠太小的配对当作不同行丢掉。改了分块或断句之后，用它判断到底是变好了还是变差了。
 
 ## 模型文件
 
-模型文件放在 `models/` 下（已 gitignore — 从下方链接或 GitHub Release 下载）。
-后端在启动时自动探测各文件，缺失的功能会优雅停用。放入 `models/asr/` 的
-其他 `.gguf` 会自动出现在 `/api/models` 中，支持热切换。
+模型不在仓库里。放到 `models/` 下，后端启动时自己找，缺什么就停掉对应功能，不会拒绝启动。往 `models/asr/` 里丢任何额外的 `.gguf`，都会出现在 `/api/models` 里可以热切换。
 
-| 文件 | 位置 | 大小 | 必需 | 说明 |
-|------|----------|------|----------|-------------|
-| `Qwen3-ASR-1.7B-Q8_0.gguf` | `models/asr/` | ~2.2 GB | 是 | 主 ASR 模型（Q8 量化） |
-| `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` | `models/asr/` | ~356 MB | 是 | ASR 多模态投影器（Q8） |
-| `qwen3-forced-aligner-0.6b-q8_0.gguf` | `models/aligner/` | ~940 MB | 否 | ForcedAligner 模型（Q8，CPU 后端） |
-| Qwen3-ForcedAligner-0.6B (safetensors) | `models/aligner/official/` | ~1.8 GB | 否 | ForcedAligner（GPU 后端，经 qwen-asr） |
+| 文件 | 位置 | 大小 | 必需 | 用途 |
+|------|----------|------|----------|------|
+| `Qwen3-ASR-1.7B-Q8_0.gguf` | `models/asr/` | ~2.2 GB | 是 | ASR 模型本体，Q8 |
+| `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` | `models/asr/` | ~356 MB | 是 | 它的多模态投影器 |
+| `qwen3-forced-aligner-0.6b-q8_0.gguf` | `models/aligner/` | ~940 MB | 否 | CPU 后端的对齐器 |
+| Qwen3-ForcedAligner-0.6B（safetensors） | `models/aligner/official/` | ~1.8 GB | 否 | GPU 后端的对齐器 |
 
-- ASR 模型：[ggml-org/Qwen3-ASR-1.7B-GGUF](https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF)
-- 对齐器 GGUF：[cstr/qwen3-forced-aligner-0.6b-GGUF](https://huggingface.co/cstr/qwen3-forced-aligner-0.6b-GGUF)
+ASR 模型：[ggml-org/Qwen3-ASR-1.7B-GGUF](https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF)
+对齐器 GGUF：[cstr/qwen3-forced-aligner-0.6b-GGUF](https://huggingface.co/cstr/qwen3-forced-aligner-0.6b-GGUF)
+
+## 已知的限制
+
+- 同一时刻只转一个文件。队列是让你不用盯着显卡，不是用来并行的。
+- `HOST=0.0.0.0` 是无鉴权的共享。Origin 和 Host 检查能挡住路人浏览器的请求，挡不住同一网段里想看你的历史、想往队列里塞文件的人。
+- 只在 Windows 上可用。启动脚本是批处理，桌面壳依赖 WebView2，互斥量和对齐器 DLL 走的都是 Windows 专有接口。
+- 1.5 秒的重叠能减少跨界词的错字，但不能消掉。
+- CPU 后端下，超出 `ALIGN_MAX_CHARS` 的文本在对齐前就被截断了，那些词只保留段级时间戳，没有词级的。
+- 上传按设计卡在 2 GiB 和 12 小时。
 
 ## 许可证
 
-模型文件遵循 Qwen 原始许可证。应用代码按“原样”提供。
+模型文件仍受 Qwen 原始许可证约束。应用代码按原样提供。
