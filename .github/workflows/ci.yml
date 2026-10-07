@@ -34,12 +34,14 @@ jobs:
       - name: Compile-check all backend modules
         run: python -m compileall -q backend
       - name: Install lightweight test deps
-        run: pip install fastapi uvicorn httpx python-multipart pytest
-      # Best-effort: the pure-logic tests (text cleaning, resegmentation,
+        # numpy is not optional here: forced_aligner imports it at module level,
+        # and this step imports backend.main through it.
+        run: pip install fastapi uvicorn httpx python-multipart numpy pytest
+      # The pure-logic tests (chunking, text cleaning, resegmentation,
       # middleware, cancel/abort, path-leak) run without llama-server / GPU /
-      # ffmpeg because the test harness mocks them. Tests needing the full
-      # conda env are skipped locally by the harness; failures here are
-      # informational so a missing optional dep doesn't red the build.
+      # ffmpeg because the harness mocks them, so a failure here is a real
+      # regression and fails the build. compileall above only byte-compiles; it
+      # never imports, so it cannot catch a broken module-level import.
       - name: Run test suite (SKIP_LLAMA=1)
         env:
           SKIP_LLAMA: "1"
