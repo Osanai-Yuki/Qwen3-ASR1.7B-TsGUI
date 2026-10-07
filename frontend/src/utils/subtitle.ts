@@ -21,22 +21,38 @@ export function toVTT(segments: Segment[]): string {
     .map((seg) => {
       const start = formatTimestamp(seg.start);
       const end = formatTimestamp(seg.end);
-      return `${start} --> ${end}\n${normalizeSubtitleText(seg.text)}`;
+      return `${start} --> ${end}\n${escapeVttText(seg.text)}`;
     })
     .join("\n\n");
   return `WEBVTT\n\n${body}`;
 }
 
 function normalizeSubtitleText(text: string): string {
-  return text.replace(/\n{2,}/g, "\n");
+  // A bare \r would end an SRT cue line and split a VTT cue in two, and other
+  // C0 controls make the file unparseable. The backend only strips \n and
+  // spaces, so transcript text can still carry them.
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "")
+    .replace(/\n{2,}/g, "\n");
+}
+
+function escapeVttText(text: string): string {
+  // VTT cue text parses markup: a transcript that literally says "<v person>"
+  // or starts a line with NOTE would otherwise become a cue tag or a comment.
+  return normalizeSubtitleText(text).replace(/&/g, "&amp;").replace(/</g, "&lt;");
 }
 
 function escapeAssText(text: string): string {
+  // Backslash first, so the \N we emit for line breaks is not re-escaped.
+  // A lone \r must go too: it terminates the Dialogue line and lets the rest
+  // of the transcript be read as new ASS sections.
   return text
     .replace(/\\/g, "\\\\")
     .replace(/\{/g, "\\{")
     .replace(/\}/g, "\\}")
-    .replace(/\n/g, "\\N");
+    .replace(/[\r\n]+/g, "\\N")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
 }
 
 /** ASS — script info + default style + Dialogue lines (centisecond timing). */
@@ -92,21 +108,36 @@ export const SUBTITLE_FORMATS: {
 ];
 
 /** Build the export string for a given format. */
+function withFallbackCue(
+  segments: Segment[],
+  text: string,
+  stats: Stats | null,
+): Segment[] {
+  // The backend falls back to the bare text field when a chunk yields no usable
+  // segment timestamps. Exporting an empty cue list would then hand back a file
+  // with nothing in it while the UI still shows the transcript.
+  if (segments.length > 0 || !text.trim()) return segments;
+  const duration = stats?.audio_duration;
+  const end = typeof duration === "number" && isFinite(duration) ? duration : 0;
+  return [{ start: 0, end: Math.max(end, 0), text: text.trim() }];
+}
+
 export function buildSubtitle(
   format: SubtitleFormat,
   text: string,
   segments: Segment[],
   stats: Stats | null,
 ): string {
+  const cues = withFallbackCue(segments, text, stats);
   switch (format) {
     case "srt":
-      return toSRT(segments);
+      return toSRT(cues);
     case "vtt":
-      return toVTT(segments);
+      return toVTT(cues);
     case "ass":
-      return toASS(segments);
+      return toASS(cues);
     case "txt":
-      return toTXT(segments);
+      return toTXT(cues);
     case "json":
       return toJSON(text, segments, stats);
   }

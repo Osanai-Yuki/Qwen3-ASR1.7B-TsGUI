@@ -3,6 +3,7 @@ import math
 import re
 import shutil
 import subprocess
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -227,6 +228,34 @@ def probe_duration(input_path: Path) -> float:
     return float(data.get("format", {}).get("duration", 0.0))
 
 
+def extract_slice(
+    input_path: Path,
+    out_path: Path,
+    start: float,
+    seconds: float,
+    ffmpeg: str | None = None,
+) -> Path:
+    """Write one mono 16 kHz PCM slice of ``seconds`` starting at ``start``.
+
+    ``ffmpeg`` is passed in by callers that already resolved it, so the per-chunk
+    path does not run ``which`` thousands of times.
+    """
+    cmd = [
+        ffmpeg or resolve_ffmpeg("ffmpeg"),
+        "-y",
+        "-loglevel", "error",
+        "-ss", f"{start:.3f}",
+        "-t", f"{seconds:.3f}",
+        "-i", str(input_path),
+        "-ac", "1",
+        "-ar", "16000",
+        "-c:a", "pcm_s16le",
+        str(out_path),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+    return out_path
+
+
 def split_audio(
     input_path: Path,
     out_dir: Path,
@@ -277,7 +306,9 @@ def split_audio(
     MAX_PLAN = 6000  # hard cap: a 25s step needs ~8h of audio to reach this
     while start < duration:
         plan.append((idx, start, prev_end))
-        prev_end = start  # next chunk is responsible from where this one began
+        # This chunk and the next one both hear [start+step, start+chunk_seconds],
+        # so the next chunk is only responsible for output from our end onwards.
+        prev_end = min(start + chunk_seconds, duration)
         start += step
         idx += 1
         if len(plan) > MAX_PLAN:
@@ -289,19 +320,7 @@ def split_audio(
     def extract(item: tuple[int, float, float]) -> tuple[Path, float, float] | None:
         i, s, pe = item
         out_path = out_dir / f"chunk_{i:04d}.wav"
-        cmd = [
-            ffmpeg,
-            "-y",
-            "-loglevel", "error",
-            "-ss", f"{s:.3f}",
-            "-t", f"{chunk_seconds:.3f}",
-            "-i", str(input_path),
-            "-ac", "1",
-            "-ar", "16000",
-            "-c:a", "pcm_s16le",
-            str(out_path),
-        ]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        extract_slice(input_path, out_path, s, chunk_seconds, ffmpeg=ffmpeg)
         if out_path.stat().st_size > 44:
             return (out_path, s, pe)
         return None

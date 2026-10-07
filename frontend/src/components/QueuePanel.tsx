@@ -77,10 +77,13 @@ export function QueuePanel({
 
   const dropOn = (targetId: string) => {
     if (!dragId || dragId === targetId) return;
+    const from = queuedIds.indexOf(dragId);
     const ids = queuedIds.filter((i) => i !== dragId);
     const at = ids.indexOf(targetId);
     if (at < 0) return;
-    ids.splice(at, 0, dragId);
+    // Always inserting before the target can never reach the final slot, so a
+    // downward move has to land after it.
+    ids.splice(from > at ? at : at + 1, 0, dragId);
     run(onReorder(ids));
   };
 

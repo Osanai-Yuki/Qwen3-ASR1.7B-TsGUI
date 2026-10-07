@@ -128,7 +128,7 @@ export async function switchModel(
   return (await res.json()) as SwitchModelResponse | ApiError;
 }
 
-/* ── Batch queue (backend/queue_api.py) ────────────────────────── */
+/* Batch queue (backend/queue_api.py) */
 
 /** GET /api/queue — whole queue state (poll; compare `version`). */
 export function fetchQueue(): Promise<QueueStateResponse> {

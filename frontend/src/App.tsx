@@ -302,7 +302,7 @@ export default function App() {
     setSeekTo(time);
   }, []);
 
-  // ── Batch queue actions ──────────────────────────────────────
+  // Batch queue actions
   // Returns null on success or an error message on failure. The message is
   // shown inline by BatchUploadZone (the global error bar sits behind the
   // upload modal), and mirrored to the global error channel so the
@@ -549,7 +549,7 @@ export default function App() {
         className="glass flex flex-col h-full text-white overflow-hidden rounded-3xl"
         inert={anyPanelOpen}
       >
-      {/* ── Top toolbar ─────────────────────────────────────────── */}
+      {/* Top toolbar */}
       <header className="shrink-0 z-20 border-b border-white/10">
         <div className="flex items-center gap-3 px-5 sm:px-8 py-3.5">
           {/* Brand + model info */}
@@ -653,7 +653,7 @@ export default function App() {
         )}
       </header>
 
-      {/* ── Main: wide transcript ──────────────────────────────── */}
+      {/* Main: wide transcript */}
       <main className="flex-1 min-h-0 overflow-hidden">
         {/* Screen-reader completion announcement — always mounted so the
             live region exists before its text changes. */}
@@ -787,7 +787,7 @@ export default function App() {
         </div>
       </main>
 
-      {/* ── Bottom player bar ──────────────────────────────────── */}
+      {/* Bottom player bar */}
       {audioUrl && (
         <footer className="shrink-0 border-t border-white/10">
           <AudioPlayer
@@ -800,7 +800,7 @@ export default function App() {
       )}
       </div>
 
-      {/* ── Upload modal ───────────────────────────────────────── */}
+      {/* Upload modal */}
       {uploadOpen && (
         <Overlay onClose={() => !working && setUploadOpen(false)} title="Upload audio or video">
           {/* Single / Batch tabs — APG tabs pattern: roving tabindex, arrow
@@ -878,7 +878,7 @@ export default function App() {
         </Overlay>
       )}
 
-      {/* ── History drawer ─────────────────────────────────────── */}
+      {/* History drawer */}
       {historyOpen && (
         <Drawer side="left" onClose={() => setHistoryOpen(false)} title="History">
           <HistoryPanel
@@ -893,7 +893,7 @@ export default function App() {
         </Drawer>
       )}
 
-      {/* ── Queue drawer ───────────────────────────────────── */}
+      {/* Queue drawer */}
       {queueOpen && (
         <Drawer side="right" onClose={() => setQueueOpen(false)} title="Batch queue">
           <QueuePanel
@@ -910,7 +910,7 @@ export default function App() {
         </Drawer>
       )}
 
-      {/* ── Export dropdown ────────────────────────────────────── */}
+      {/* Export dropdown */}
       {exportOpen && (
         <Overlay onClose={() => setExportOpen(false)} title="Export transcript">
           <ExportBar
@@ -923,16 +923,16 @@ export default function App() {
         </Overlay>
       )}
 
-      {/* ── Statistics overlay ─────────────────────────────────── */}
+      {/* Statistics overlay */}
       {statsOpen && (
         <Overlay onClose={() => setStatsOpen(false)} title="Statistics">
           <StatsPanel stats={stats} />
         </Overlay>
       )}
 
-      {/* ── Global drop hint (pointer-events-none: drops fall through to the
+      {/* Global drop hint (pointer-events-none: drops fall through to the
           window handlers above). Suppressed while the upload modal is open —
-          UploadZone has its own drag styling there. ─────────────────── */}
+          UploadZone has its own drag styling there. */}
       {dragActive && !uploadOpen && (
         <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center p-6 animate-fade-in">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
@@ -950,7 +950,7 @@ export default function App() {
   );
 }
 
-/* ── Reusable overlay (centered modal) ─────────────────────────── */
+/* Reusable overlay (centered modal) */
 function useDismissOnEscape(onClose: () => void) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1056,7 +1056,7 @@ function Overlay({
   );
 }
 
-/* ── Reusable drawer (side panel) ──────────────────────────────── */
+/* Reusable drawer (side panel) */
 function Drawer({
   children,
   onClose,

@@ -62,7 +62,7 @@ class GPUAligner:
         self._torch = None
         self._Qwen3ForcedAligner = None
 
-    # ── public API ────────────────────────────────────────────────────
+    # public API
 
     @property
     def available(self) -> bool:
@@ -185,7 +185,7 @@ class GPUAligner:
                 progress_cb(i, total)
         return results
 
-    # ── model info ────────────────────────────────────────────────────
+    # model info
 
     @property
     def model_name(self) -> str:

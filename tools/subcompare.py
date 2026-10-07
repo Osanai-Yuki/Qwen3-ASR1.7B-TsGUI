@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-# ── Data structures ───────────────────────────────────────────────────────
+# Data structures
 
 @dataclass
 class Segment:
@@ -39,9 +39,14 @@ class SegmentPair:
     end_drift: float
 
 
-# ── Subtitle parsers ──────────────────────────────────────────────────────
+# Subtitle parsers
 
 MAX_SUBTITLE_BYTES = 50 * 1024 * 1024  # 50 MiB
+
+# A cue timestamp is [HH:]MM:SS.mmm; WebVTT allows the hours to be dropped and
+# either separator is seen in the wild.
+_TS = r"(?:\d{1,2}:)?\d{1,2}:\d{2}[,.]\d{1,3}"
+_TIMING_RE = re.compile(rf"({_TS})\s*-->\s*({_TS})")
 
 
 def _read(path: Path) -> str:
@@ -54,21 +59,28 @@ def _read(path: Path) -> str:
     raw = path.read_bytes()
     # BOM-based detection.
     if raw[:3] == b'\xef\xbb\xbf':
-        return raw[3:].decode("utf-8")
-    if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
-        return raw.decode("utf-16")
-    # Try UTF-8 first (most common for SRT/VTT).
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        pass
-    # Fall back to encodings common for subtitle files.
-    for enc in ("gbk", "gb2312", "big5", "shift_jis", "cp1252"):
+        text = raw[3:].decode("utf-8")
+    elif raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+        text = raw.decode("utf-16")
+    else:
+        # Try UTF-8 first (most common for SRT/VTT).
         try:
-            return raw.decode(enc)
+            text = raw.decode("utf-8")
         except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="replace")
+            text = None
+        if text is None:
+            # Fall back to encodings common for subtitle files.
+            for enc in ("gbk", "gb2312", "big5", "shift_jis", "cp1252"):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                text = raw.decode("utf-8", errors="replace")
+    # Block splitting keys on blank lines, so CRLF (Windows editors write it,
+    # and so does this app's own ASS/VTT output path) must not defeat it.
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def parse_srt(text: str) -> list[Segment]:
@@ -82,14 +94,12 @@ def parse_srt(text: str) -> list[Segment]:
         if len(lines) < 2:
             continue
         # Find the timing line: "HH:MM:SS,mmm --> HH:MM:SS,mmm"
-        timing_re = re.compile(
-            r'(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{3})'
-        )
         timing_line = None
         timing_idx = None
         for i, line in enumerate(lines):
-            if timing_re.search(line):
-                timing_line = timing_re.search(line)
+            m = _TIMING_RE.search(line)
+            if m:
+                timing_line = m
                 timing_idx = i
                 break
         if timing_line is None:
@@ -106,21 +116,26 @@ def parse_srt(text: str) -> list[Segment]:
 
 
 def parse_vtt(text: str) -> list[Segment]:
-    """Parse WebVTT."""
-    # Strip WEBVTT header.
-    if text.strip().upper().startswith("WEBVT"):
-        text = re.sub(r'^.*?(\d{1,2}:\d{2}:\d{2})', r'\1', text, flags=re.DOTALL)
-    # Insert a blank line before each timestamp so SRT-style split works.
-    text = re.sub(r'(\d{1,2}:\d{2}[.,]\d{3})\s*-->\s*', r'\n\1 --> ', text)
-    return parse_srt(text)
+    """Parse WebVTT.
+
+    Cue blocks are blank-line separated exactly like SRT and may carry a cue
+    identifier line, so after dropping the WEBVTT header the SRT block walk does
+    the job. Header settings and NOTE blocks have no timing line and are skipped
+    by it.
+    """
+    body = text.strip()
+    if body.upper().startswith("WEBVT"):
+        body = body.split("\n", 1)[1] if "\n" in body else ""
+    return parse_srt(body)
 
 
 def _parse_timestamp(s: str) -> float:
-    """'HH:MM:SS.mmm' or 'HH:MM:SS,mmm' → seconds."""
-    m = re.match(r'(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})', s.strip())
+    """'HH:MM:SS.mmm', 'HH:MM:SS,mmm' or VTT's 'MM:SS.mmm' → seconds."""
+    m = re.match(r'(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})', s.strip())
     if not m:
         return 0.0
-    h, mi, sec, ms = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)
+    h = int(m.group(1)) if m.group(1) else 0
+    mi, sec, ms = int(m.group(2)), int(m.group(3)), m.group(4)
     return h * 3600 + mi * 60 + sec + int(ms.ljust(3, '0')) / 1000.0
 
 
@@ -187,7 +202,7 @@ def parse_file(path: Path) -> list[Segment]:
     return parse_srt(text)  # default to SRT
 
 
-# ── Text metrics ──────────────────────────────────────────────────────────
+# Text metrics
 
 def _levenshtein(ref: list, hyp: list) -> float:
     """Standard Levenshtein distance on a token list."""
@@ -234,7 +249,7 @@ def _normalize(text: str) -> str:
     return t
 
 
-# ── Alignment ─────────────────────────────────────────────────────────────
+# Alignment
 
 def align_segments(
     ref_segs: list[Segment],
@@ -290,7 +305,7 @@ def align_segments(
     return result
 
 
-# ── Analysis ──────────────────────────────────────────────────────────────
+# Analysis
 
 def compute_metrics(pairs: list[tuple[Segment, Segment]]) -> dict:
     """Aggregate WER / CER / timestamp drift across all pairs."""
@@ -340,7 +355,7 @@ def compute_metrics(pairs: list[tuple[Segment, Segment]]) -> dict:
     }
 
 
-# ── TUI output ────────────────────────────────────────────────────────────
+# TUI output
 
 def tui_report(metrics: dict, ref_name: str, hyp_name: str) -> str:
     lines: list[str] = []
@@ -392,7 +407,7 @@ def tui_report(metrics: dict, ref_name: str, hyp_name: str) -> str:
     return "\n".join(lines)
 
 
-# ── HTML report ───────────────────────────────────────────────────────────
+# HTML report
 
 def html_report(metrics: dict, ref_name: str, hyp_name: str) -> str:
     """Side-by-side diff HTML with timestamp drift chart."""
@@ -564,7 +579,7 @@ resize();
 </html>"""
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────
+# CLI
 
 def main():
     parser = argparse.ArgumentParser(

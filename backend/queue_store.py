@@ -58,7 +58,7 @@ class QueueStore:
         self._state: dict = {"version": 0, "paused": False, "items": []}
         self._load()
 
-    # ── persistence ─────────────────────────────────────────────────
+    # persistence
 
     def _load(self) -> None:
         """Load state from disk; corruption is logged, never fatal.
@@ -120,7 +120,7 @@ class QueueStore:
         )
         os.replace(tmp, self._file)
 
-    # ── helpers ─────────────────────────────────────────────────────
+    # helpers
 
     def _find_locked(self, qid: str) -> dict | None:
         if not isinstance(qid, str) or not _VALID_ID.fullmatch(qid):
@@ -155,7 +155,7 @@ class QueueStore:
         """Public best-effort removal of an item's staged upload."""
         self._unlink_staged(item)
 
-    # ── public API ──────────────────────────────────────────────────
+    # public API
 
     def new_id(self) -> str:
         return _new_id()

@@ -436,143 +436,7 @@ def test_transcribe_pipeline_aligns(tmp_path, monkeypatch):
     assert body["history_id"]
 
 
-def test_transcribe_concurrent_chunks(tmp_path, monkeypatch):
-    """With ASR_CONCURRENCY>1, consecutive chunks' ASR requests overlap in
-    time — the second chunk's transcription starts before the first's ends,
-    and the merged text still preserves chunk order."""
-    monkeypatch.setenv("ASR_CONCURRENCY", "2")
-    client = make_client(tmp_path=tmp_path)
-
-    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25), 0.0) for i in range(2)]
-    for p, _, _ in fake_chunks:
-        p.write_bytes(_make_wav_bytes(0.1))
-    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 50.0)
-    monkeypatch.setattr(main_mod, "iter_chunks", lambda _s, _o, _c, _v, **_k: iter(fake_chunks))
-
-    started: list[float] = []
-    done: list[float] = []
-
-    async def fake_chunk(_client, _path, initial_prompt=None):
-        started.append(time.monotonic())
-        await asyncio.sleep(0.2)
-        done.append(time.monotonic())
-        idx = int(_path.stem[1:])
-        return {"text": f"chunk{idx}",
-                "segments": [{"start": 0.0, "end": 1.0, "text": f"chunk{idx}"}]}
-
-    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
-
-    r = client.post(
-        "/api/transcribe",
-        files={"file": ("x.wav", _make_wav_bytes(0.1), "audio/wav")},
-        data={"align": "false"},
-    )
-    assert r.status_code == 200, r.text
-    assert len(started) == 2 and len(done) == 2
-    # The second chunk's ASR started before the first chunk's ASR finished.
-    assert started[1] < done[0], "chunks were not transcribed concurrently"
-    body = r.json()
-    assert body["text"] == "chunk0 chunk1"
-    assert body["segments"][0]["start"] == 0.0
-    assert body["segments"][1]["start"] == 25.0
-
-
-def test_transcribe_serial_chunks_when_concurrency_one(tmp_path, monkeypatch):
-    """ASR_CONCURRENCY=1 restores the serial pipeline: the second chunk's ASR
-    cannot start before the first chunk's ASR finishes."""
-    monkeypatch.setenv("ASR_CONCURRENCY", "1")
-    client = make_client(tmp_path=tmp_path)
-
-    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25), 0.0) for i in range(2)]
-    for p, _, _ in fake_chunks:
-        p.write_bytes(_make_wav_bytes(0.1))
-    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 50.0)
-    monkeypatch.setattr(main_mod, "iter_chunks", lambda _s, _o, _c, _v, **_k: iter(fake_chunks))
-
-    started: list[float] = []
-    done: list[float] = []
-
-    async def fake_chunk(_client, _path, initial_prompt=None):
-        started.append(time.monotonic())
-        await asyncio.sleep(0.1)
-        done.append(time.monotonic())
-        idx = int(_path.stem[1:])
-        return {"text": f"chunk{idx}",
-                "segments": [{"start": 0.0, "end": 1.0, "text": f"chunk{idx}"}]}
-
-    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
-
-    r = client.post(
-        "/api/transcribe",
-        files={"file": ("x.wav", _make_wav_bytes(0.1), "audio/wav")},
-        data={"align": "false"},
-    )
-    assert r.status_code == 200, r.text
-    assert len(started) == 2 and len(done) == 2
-    # Serial: the second chunk's ASR starts only after the first finishes
-    # (equal timestamps are fine — the point is it cannot start earlier).
-    assert started[1] >= done[0], "chunks were transcribed concurrently but ASR_CONCURRENCY=1"
-
-
-# ── VAD chunking (Task 6) ────────────────────────────────────────────────
-def test_transcribe_uses_vad_chunks(tmp_path, monkeypatch):
-    """VAD_CHUNKING=1 routes the pipeline through _vad_plan + iter_vad_chunks."""
-    monkeypatch.setattr(main_mod, "VAD_CHUNKING", True)
-    client = make_client(tmp_path=tmp_path)
-
-    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25), 0.0) for i in range(2)]
-    for p, _, _ in fake_chunks:
-        p.write_bytes(_make_wav_bytes(0.1))
-    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 50.0)
-    monkeypatch.setattr(main_mod, "_vad_plan", lambda *a, **_kw: [(0.0, 25.0), (25.0, 50.0)])
-    monkeypatch.setattr(main_mod, "iter_vad_chunks", lambda *a, **_kw: iter(fake_chunks))
-
-    async def fake_chunk(_client, _path, initial_prompt=None):
-        idx = int(_path.stem[1:])
-        return {"text": f"vad{idx}",
-                "segments": [{"start": 0.0, "end": 1.0, "text": f"vad{idx}"}]}
-
-    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
-
-    r = client.post(
-        "/api/transcribe",
-        files={"file": ("x.wav", _make_wav_bytes(0.1), "audio/wav")},
-        data={"align": "false"},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["text"] == "vad0 vad1"
-
-
-def test_transcribe_falls_back_to_fixed_chunking_when_vad_fails(tmp_path, monkeypatch):
-    monkeypatch.setattr(main_mod, "VAD_CHUNKING", True)
-    client = make_client(tmp_path=tmp_path)
-
-    fake_chunks = [(tmp_path / f"c{i}.wav", float(i * 25), 0.0) for i in range(2)]
-    for p, _, _ in fake_chunks:
-        p.write_bytes(_make_wav_bytes(0.1))
-    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 50.0)
-    # VAD planning raises -> the pipeline must fall back to iter_chunks.
-    monkeypatch.setattr(main_mod, "_vad_plan", lambda *a, **_kw: (_ for _ in ()).throw(RuntimeError("vad down")))
-    monkeypatch.setattr(main_mod, "iter_chunks",
-                        lambda _s, _o, _c, _v, **_k: iter(fake_chunks))
-
-    async def fake_chunk(_client, _path, initial_prompt=None):
-        idx = int(_path.stem[1:])
-        return {"text": f"fix{idx}",
-                "segments": [{"start": 0.0, "end": 1.0, "text": f"fix{idx}"}]}
-
-    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
-
-    r = client.post(
-        "/api/transcribe",
-        files={"file": ("x.wav", _make_wav_bytes(0.1), "audio/wav")},
-        data={"align": "false"},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["text"] == "fix0 fix1"
-
-
-# ── Cancel / abort (Task 2) ──────────────────────────────────────────────
+# Cancel / abort
 def test_abort_sets_cancel_flag():
     client = make_client()
     with main_mod.job_lock:
@@ -639,7 +503,7 @@ def test_cancel_during_transcribe_keeps_partial(tmp_path, monkeypatch):
     assert main_mod.job_state["status"] == "cancelled"
 
 
-# ── Path-leak fix (Task 2 security) ──────────────────────────────────────
+# History and queue ids cannot escape their directory
 def test_models_endpoint_strips_paths(monkeypatch):
     """The /api/models response must not expose absolute filesystem paths."""
     client = make_client()
@@ -674,7 +538,7 @@ def test_models_switch_rejected_while_switching(monkeypatch):
         main_mod._set_boot(switching=False)
 
 
-# ── Middleware hardening (Task 2 security) ───────────────────────────────
+# Middleware hardening
 def test_middleware_blocks_cross_site_sfs():
     """A cross-site Sec-Fetch-Site (drive-by subresource) must be rejected."""
     client = make_client()
@@ -695,7 +559,7 @@ def test_middleware_blocks_foreign_host():
     assert r.status_code == 403
 
 
-# ── Audio-cache traversal (Task 2 security) ──────────────────────────────
+# Audio-cache traversal
 def test_audio_cache_serve_traversal_notfound(tmp_path, monkeypatch):
     cache_dir = tmp_path / "audio_cache"
     cache_dir.mkdir()
@@ -716,7 +580,7 @@ def test_audio_cache_serve_traversal_notfound(tmp_path, monkeypatch):
     assert r3.status_code == 404
 
 
-# ── Review fixes: IPv6 Host, non-loopback LAN access, partial-MP3 cleanup ──
+# IPv6 Host, non-loopback LAN access, partial-MP3 cleanup
 def test_middleware_allows_ipv6_loopback_host():
     """[::1] is a loopback literal and must be accepted, not split into '['."""
     client = make_client()
@@ -740,6 +604,22 @@ def test_middleware_nonloopback_restricts_when_allowed_hosts_set(monkeypatch):
     client = make_client()
     assert client.get("/api/health", headers={"host": "myhost.local:8000"}).status_code == 200
     assert client.get("/api/health", headers={"host": "evil.example.com:8000"}).status_code == 403
+
+
+def test_middleware_rejects_cross_port_local_origin():
+    """Another page on 127.0.0.1 is same-site but not same-origin, so it is
+    rejected; a matching host and port still passes."""
+    client = make_client()
+    r = client.get(
+        "/api/health",
+        headers={"host": "127.0.0.1:8000", "origin": "http://127.0.0.1:3000"},
+    )
+    assert r.status_code == 403
+    ok = client.get(
+        "/api/health",
+        headers={"host": "127.0.0.1:8000", "origin": "http://127.0.0.1:8000"},
+    )
+    assert ok.status_code == 200
 
 
 def test_extract_failure_clears_partial_cache_mp3(tmp_path, monkeypatch):
@@ -769,7 +649,7 @@ def test_extract_failure_clears_partial_cache_mp3(tmp_path, monkeypatch):
     assert main_mod.job_state["status"] not in ("preparing", "transcribing", "aligning")
 
 
-# ── High-severity fixes regression tests ───────────────────────────────────
+# Readiness gating and input validation
 
 def test_llama_runner_stops_process_on_startup_failure(tmp_path, monkeypatch):
     """A failed llama-server startup must not leave a leaked subprocess."""

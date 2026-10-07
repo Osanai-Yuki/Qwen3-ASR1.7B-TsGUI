@@ -25,7 +25,7 @@ def _enqueue_wavs(client, names, align=False):
     return client.post("/api/queue/items", files=files, data={"align": str(align).lower()})
 
 
-# ── QueueStore unit tests ───────────────────────────────────────────────
+# QueueStore unit tests
 
 
 def test_store_add_and_persist(tmp_path):
@@ -100,7 +100,7 @@ def test_store_sort_by(tmp_path):
     assert store.sort_by("nope") is False
 
 
-# ── API tests ───────────────────────────────────────────────────────────
+# API tests
 
 
 def test_enqueue_rejects_unsupported_type(tmp_path):
@@ -193,21 +193,47 @@ def test_worker_marks_error_and_keeps_staged(tmp_path, monkeypatch):
     assert (store.uploads_dir / item["staged_name"]).is_file()
 
 
-def test_delete_running_requests_cancel(tmp_path):
+def test_delete_running_item_cancels_only_its_own_job(tmp_path):
+    """A stale "running" flag must not cancel somebody else's job, but deleting
+    an item that really does own the slot cancels it."""
     client = make_client(tmp_path=tmp_path)
     store = _fresh_store(tmp_path)
-    r = _enqueue_wavs(client, ["clip.wav"])
-    qid = r.json()["items"][0]["id"]
-    store.set_status(qid, "running")
+    qid = _enqueue_wavs(client, ["clip.wav"]).json()["items"][0]["id"]
 
+    # No worker claimed the slot. This is the case that used to abort an
+    # unrelated manual transcription.
+    store.set_status(qid, "running")
     resp = client.delete(f"/api/queue/items/{qid}")
     assert resp.json() == {"ok": True, "skipping": True}
+    assert main_mod._is_cancel_requested() is False
+
+    # Same item, now genuinely holding the slot.
+    main_mod._set_job_owner(qid)
+    assert main_mod._claim_job() is True
+    resp2 = client.delete(f"/api/queue/items/{qid}")
+    assert resp2.json() == {"ok": True, "skipping": True}
     assert main_mod._is_cancel_requested() is True
-    # Item still present (worker finalizes it), status untouched here.
-    assert store.snapshot()["items"][0]["status"] == "running"
-    # Reset the global cancel flag for later tests.
+
     with main_mod.job_lock:
         main_mod._cancel_requested = False
+        main_mod.job_state["status"] = "idle"
+    main_mod._set_job_owner(None)
+
+
+def test_request_cancel_scoped_to_another_owner_is_ignored():
+    main_mod._set_job_owner("aaa111")
+    assert main_mod._claim_job() is True
+    try:
+        assert main_mod._request_cancel("bbb222") is False
+        assert main_mod._is_cancel_requested() is False
+        # An unscoped cancel (POST /api/abort) always applies.
+        assert main_mod._request_cancel() is True
+        assert main_mod._is_cancel_requested() is True
+    finally:
+        with main_mod.job_lock:
+            main_mod._cancel_requested = False
+            main_mod.job_state["status"] = "idle"
+        main_mod._set_job_owner(None)
 
 
 def test_delete_queued_removes_item_and_staged(tmp_path):

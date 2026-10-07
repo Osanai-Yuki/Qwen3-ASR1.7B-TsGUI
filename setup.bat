@@ -7,7 +7,7 @@ echo ============================================
 echo.
 set ROOT=%~dp0
 
-:: ── 1. Conda environment ───────────────────────────────────────────
+:: 1. Conda environment
 where conda >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] conda not found on PATH. Install Miniconda/Anaconda first.
@@ -29,7 +29,7 @@ if errorlevel 1 (
     conda env update -f "%ROOT%environment.yml" --prune
 )
 
-:: ── 2. Frontend dependencies ───────────────────────────────────────
+:: 2. Frontend dependencies
 echo [2/4] Installing frontend dependencies...
 where npm >nul 2>&1
 if errorlevel 1 (
@@ -47,7 +47,7 @@ if errorlevel 1 (
 )
 popd
 
-:: ── 3. Required files check ────────────────────────────────────────
+:: 3. Required files check
 echo [3/4] Checking required files...
 set MISSING=0
 if not exist "%ROOT%bin\llama-server.exe" (
@@ -69,7 +69,7 @@ if not exist "%ROOT%models\aligner\qwen3-forced-aligner-0.6b-q8_0.gguf" (
     echo   [OPTIONAL] aligner model missing - forced alignment will be skipped
 )
 
-:: ── 4. ffmpeg check ────────────────────────────────────────────────
+:: 4. ffmpeg check
 echo [4/4] Checking ffmpeg...
 where ffmpeg >nul 2>&1
 if errorlevel 1 (

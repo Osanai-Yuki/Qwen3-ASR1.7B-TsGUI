@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* ── Geist variable fonts (local, OFL-licensed) ──────────────────────── */
+/* Geist variable fonts (local, OFL-licensed) */
 @font-face {
   font-family: "Geist";
   src: url("/fonts/Geist-Variable.woff2") format("woff2");
@@ -64,7 +64,7 @@
      (cards) → 3xl 24 (panels, dialogs) → full (pills). */
 }
 
-/* ── Base: ambient gradient canvas (liquid-glass environment) ─────────── */
+/* Base: ambient gradient canvas (liquid-glass environment) */
 html,
 body,
 #root {
@@ -93,7 +93,7 @@ body {
   color: #000;
 }
 
-/* ── Keyboard focus ring ────────────────────────────────────────────────
+/* Keyboard focus ring
    One ring for every interactive element outside the .btn-primary/.btn-ghost
    primitives (those carry their own rounded ring). :focus-visible keeps it
    keyboard-only — mouse clicks never leave a ring behind. */
@@ -104,7 +104,7 @@ body {
   }
 }
 
-/* ── Thin translucent scrollbar ───────────────────────────────────────── */
+/* Thin translucent scrollbar */
 * {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
@@ -124,7 +124,7 @@ body {
   background: rgba(255, 255, 255, 0.28);
 }
 
-/* ── Animations ───────────────────────────────────────────────────────── */
+/* Animations */
 @keyframes pulse-block {
   0%,
   100% {
@@ -179,7 +179,7 @@ body {
   animation: progress-glow 2s ease-in-out infinite;
 }
 
-/* ── Drawer slide animations ─────────────────────────────────────────── */
+/* Drawer slide animations */
 @keyframes slide-in-left {
   from {
     transform: translateX(-100%);
@@ -203,7 +203,7 @@ body {
   animation: slide-in-right 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-/* ── Exit animations (mirror the enter set so dismissals don't hard-cut) ── */
+/* Exit animations (mirror the enter set so dismissals don't hard-cut) */
 @keyframes fade-out {
   from {
     opacity: 1;
@@ -253,7 +253,7 @@ body {
   animation: slide-out-right 0.22s cubic-bezier(0.55, 0, 0.55, 0.2) both;
 }
 
-/* ── Liquid-glass primitives ─────────────────────────────────────────── */
+/* Liquid-glass primitives */
 @layer components {
   /* Frosted glass surface. Two box-shadows: a soft outer drop + a subtle
      top inner highlight that mimics light catching the glass edge. The
@@ -400,7 +400,7 @@ body {
   }
 }
 
-/* ── Reduced motion: respect users who prefer less movement ────────────── */
+/* Reduced motion: respect users who prefer less movement */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

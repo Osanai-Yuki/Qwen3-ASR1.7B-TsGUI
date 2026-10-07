@@ -17,7 +17,7 @@ def _cjk_words(text: str, start: float = 0.0, dur: float = 0.22, gap: float = 0.
     return out
 
 
-# ── resegment: backtracking hard breaks ─────────────────────────────────
+# resegment: backtracking hard breaks
 
 
 def test_resegment_cjk_prefers_filler_break():
@@ -74,7 +74,7 @@ def test_resegment_soft_break_on_pause():
     assert result[1]["text"].startswith("后面")
 
 
-# ── seam_overlap ────────────────────────────────────────────────────────
+# seam_overlap
 
 
 def test_seam_overlap_basic():
@@ -104,7 +104,7 @@ def test_seam_overlap_short_ignored():
     assert seam_overlap("说到了这", "这是新话题完全不同")[0] == 0
 
 
-# ── endpoint-level: dedup survives coarse segment timestamps ────────────
+# endpoint-level: dedup survives coarse segment timestamps
 
 
 def test_transcribe_seam_dedup_between_chunks(tmp_path, monkeypatch):

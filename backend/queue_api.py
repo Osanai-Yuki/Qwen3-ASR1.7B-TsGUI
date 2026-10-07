@@ -47,7 +47,8 @@ def init(
     safe_upload_suffix: Callable[[str | None], str],
     allowed_suffixes: set[str],
     max_upload_bytes: int,
-    request_cancel: Callable[[], None],
+    request_cancel: Callable[..., bool],
+    set_job_owner: Callable[[str | None], None],
     is_ready: Callable[[], bool],
 ) -> None:
     """Wire the queue to main.py's transcription machinery (DI, no import)."""
@@ -62,11 +63,12 @@ def init(
         "allowed_suffixes": allowed_suffixes,
         "max_upload_bytes": max_upload_bytes,
         "request_cancel": request_cancel,
+        "set_job_owner": set_job_owner,
         "is_ready": is_ready,
     }
 
 
-# ── endpoints ───────────────────────────────────────────────────────────
+# endpoints
 
 
 @router.post("/api/queue/items")
@@ -181,8 +183,10 @@ async def queue_delete(qid: str):
         return JSONResponse({"error": "not_found"}, status_code=404)
     if item["status"] == "running":
         # Skip-current: cooperative cancel; the worker marks it cancelled
-        # once /api/transcribe winds down at the next chunk boundary.
-        _deps["request_cancel"]()
+        # once /api/transcribe winds down at the next chunk boundary. The item
+        # id scopes the request, so this cannot cancel a manual transcription
+        # that grabbed the single slot while this item was still flagged running.
+        _deps["request_cancel"](item["id"])
         return {"ok": True, "skipping": True}
     store.remove(qid)
     return {"ok": True, "skipping": False}
@@ -228,7 +232,7 @@ async def queue_clear_finished():
     return {"cleared": store.clear_finished()}
 
 
-# ── worker ──────────────────────────────────────────────────────────────
+# worker
 
 
 async def process_next_once() -> bool:
@@ -256,6 +260,10 @@ async def process_next_once() -> bool:
     # Mark running before the call so GET /api/queue exposes active_id;
     # a lost race against a manual upload is undone right below (409).
     store.set_status(item["id"], "running")
+    # Tag the job about to be claimed so only a delete on this item can cancel
+    # it. Cleared in finally: a stale tag would let an old queue item cancel a
+    # later manual transcription.
+    _deps["set_job_owner"](item["id"])
     try:
         with staged.open("rb") as fh:
             upload = UploadFile(
@@ -268,6 +276,8 @@ async def process_next_once() -> bool:
         logger.exception("Queue item %s failed unexpectedly", item["id"])
         store.set_status(item["id"], "error", error="internal_error")
         return True
+    finally:
+        _deps["set_job_owner"](None)
 
     # Normalize the endpoint's dual-shaped result (JSONResponse | dict).
     if isinstance(resp, JSONResponse):

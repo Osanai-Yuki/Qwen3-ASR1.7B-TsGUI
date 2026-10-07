@@ -132,3 +132,43 @@ def test_iter_vad_chunks_computes_plan_when_not_given(tmp_path, monkeypatch):
     assert len(chunks) == 2
     assert chunks[0][1] == 0.0
     assert chunks[1][1] == 7.0
+
+
+def test_split_audio_prev_end_covers_the_overlap(tmp_path, monkeypatch):
+    """Adjacent chunks re-hear CHUNK_OVERLAP seconds, so prev_end has to be the
+    previous chunk's *end*. Backing it off only to the previous chunk's start put
+    it below every segment in the chunk, so the time-based de-duplication dropped
+    nothing and each seam was emitted twice."""
+    monkeypatch.setattr(ac, "resolve_ffmpeg", lambda _name: "ffmpeg")
+    monkeypatch.setattr(ac, "probe_duration", lambda _p: 60.0)
+
+    def fake_extract(_input_path, out_path, _start, _seconds, ffmpeg=None):
+        with open(out_path, "wb") as fh:
+            fh.write(b"RIFF" + b"\x00" * 40 + b"WAVE")
+        return out_path
+
+    monkeypatch.setattr(ac, "extract_slice", fake_extract)
+    chunks = ac.split_audio(_stub_src(tmp_path), tmp_path / "out", 25.0, 1.5)
+
+    # 25s chunks stepping 23.5s apart over 60s of audio.
+    assert [c[1] for c in chunks] == [0.0, 23.5, 47.0]
+    # Chunk 1 starts at 23.5 but is only responsible from 25.0, where chunk 0
+    # ends; the 1.5s before that is the shared overlap.
+    assert [c[2] for c in chunks] == [0.0, 25.0, 48.5]
+
+
+def test_split_audio_without_overlap_is_contiguous(tmp_path, monkeypatch):
+    monkeypatch.setattr(ac, "resolve_ffmpeg", lambda _name: "ffmpeg")
+    monkeypatch.setattr(ac, "probe_duration", lambda _p: 60.0)
+
+    def fake_extract(_input_path, out_path, _start, _seconds, ffmpeg=None):
+        with open(out_path, "wb") as fh:
+            fh.write(b"RIFF" + b"\x00" * 40 + b"WAVE")
+        return out_path
+
+    monkeypatch.setattr(ac, "extract_slice", fake_extract)
+    chunks = ac.split_audio(_stub_src(tmp_path), tmp_path / "out", 25.0, 0.0)
+    # Nothing is re-heard, so each chunk owns everything from its own start.
+    assert [(c[1], c[2]) for c in chunks] == [
+        (0.0, 0.0), (25.0, 25.0), (50.0, 50.0),
+    ]

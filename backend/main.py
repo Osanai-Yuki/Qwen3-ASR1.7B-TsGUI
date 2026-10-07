@@ -14,6 +14,7 @@ import threading
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from pathlib import Path
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -63,7 +64,7 @@ AUDIO_CACHE_DIR = DATA_DIR / "audio_cache"
 AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MP3_DEFAULT_BITRATE = 256_000
 
-# ── Network / request hardening ────────────────────────────────────────────
+# Network / request hardening
 # The app is a single-user *local* tool: the SPA is served same-origin by this
 # process, so cross-origin access is never legitimately needed. These knobs
 # feed the loopback-only middleware below and the upload/text caps.
@@ -156,10 +157,11 @@ class _LocalOnlyMiddleware:
     1. Host header must be loopback when the server is loopback-bound. This
        defeats DNS rebinding, where a remote domain is repointed at 127.0.0.1
        so the browser treats its requests as same-origin (no Origin header,
-       no preflight) and reads responses freely.    2. If an Origin header is present it must be loopback or match the
-       request's own Host (i.e. same-origin). A cross-origin page always sends
-       Origin, so this blocks drive-by exfiltration of history/transcripts and
-       CSRF-style DELETE/POST even when the body would otherwise be processed.
+       no preflight) and reads responses freely.
+    2. If an Origin header is present it must equal the request's own Host,
+       host *and* port. A cross-origin page always sends Origin, so this blocks
+       drive-by exfiltration of history/transcripts and CSRF-style DELETE/POST
+       even when the body would otherwise be processed.
 
     Implemented as raw ASGI (not BaseHTTPMiddleware) so FileResponse streaming
     for cached audio is not buffered.
@@ -176,6 +178,21 @@ class _LocalOnlyMiddleware:
             k.decode("latin-1").lower(): v.decode("latin-1")
             for k, v in scope.get("headers", ())
         }
+        # Reject an oversized body before routing. python-multipart spools each
+        # file part to a temp file, so the per-route size check only fires once
+        # the whole upload has already been buffered on disk.
+        cl = headers.get("content-length")
+        if cl:
+            try:
+                declared = int(cl)
+            except ValueError:
+                declared = -1
+            if declared > MAX_UPLOAD_BYTES:
+                await self._reject(
+                    send, "body exceeds upload limit",
+                    status=413, error="payload_too_large",
+                )
+                return
         # Parse Host with IPv6 support: prefixing "//" lets urlsplit extract the
         # hostname from "[::1]:8000" -> "::1" (a naive split(':') yields "[").
         host_name = _origin_host(f"//{headers.get('host', '')}")
@@ -194,26 +211,33 @@ class _LocalOnlyMiddleware:
         # exposure); Origin + Sec-Fetch-Site below still block drive-by browsers.
         origin = headers.get("origin")
         if origin:
-            ohost = _origin_host(origin)
-            if ohost not in _LOOPBACK_HOSTS and ohost != host_name:
+            # Compare host *and* port. Matching on the hostname alone let any
+            # other page served from 127.0.0.1 (a dev server, a notebook) read
+            # history and transcripts, because browsers call different ports on
+            # one IP host same-site rather than same-origin.
+            onetloc = (urlsplit(origin).netloc or "").lower()
+            req_host = (headers.get("host") or "").lower()
+            if onetloc != req_host:
                 await self._reject(send, "origin not allowed")
                 return
         # Sec-Fetch-Site: browsers send this on every subresource request,
-        # including <audio>/<img> elements that omit Origin. cross-site means a
-        # different site embedded this URL - block drive-by reads of history and
-        # cached audio. Absent for non-browser clients (curl, ffmpeg) -> allow.
+        # including <audio>/<img> elements that omit Origin. Absent for
+        # non-browser clients (curl, ffmpeg) -> allow. "same-site" is not
+        # accepted: that is the cross-port case the Origin comparison above
+        # already rejects, and a legit browser session here is always
+        # same-origin because the SPA is served by this same process.
         sfs = headers.get("sec-fetch-site")
-        if sfs and sfs not in ("same-origin", "same-site", "none"):
+        if sfs and sfs not in ("same-origin", "none"):
             await self._reject(send, "cross-site request blocked")
             return
         await self.app(scope, receive, send)
 
     @staticmethod
-    async def _reject(send, detail: str) -> None:
-        body = json.dumps({"error": "forbidden", "detail": detail}).encode("utf-8")
+    async def _reject(send, detail: str, status: int = 403, error: str = "forbidden") -> None:
+        body = json.dumps({"error": error, "detail": detail}).encode("utf-8")
         await send({
             "type": "http.response.start",
-            "status": 403,
+            "status": status,
             "headers": [
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
@@ -222,7 +246,7 @@ class _LocalOnlyMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
-# ── Desktop-shell session guard ───────────────────────────────────────
+# Desktop-shell session guard
 # When the app runs inside the WebView2 desktop shell (shell/shell_main.py,
 # SHELL_MODE=1), the loopback-origin check alone is not enough: any local
 # process could still call the API. The shell passes a one-time token via
@@ -415,8 +439,9 @@ def _claim_job() -> bool:
         job_state["message"] = ""
         job_state["result"] = None
         # A brand-new job never inherits a cancel requested by the previous one.
-        global _cancel_requested
+        global _cancel_requested, _claimed_by
         _cancel_requested = False
+        _claimed_by = _job_owner.get()
         return True
 
 
@@ -554,16 +579,36 @@ job_lock = threading.Lock()
 # claiming the slot - a fresh job never inherits a cancel from the previous one.
 _cancel_requested = False
 
+# The batch worker tags the job it starts with its queue item id, and _claim_job
+# records that tag. Because transcribe() is awaited in the worker's own task,
+# the context variable is visible at claim time without widening the HTTP
+# contract. _claimed_by is the job that actually owns the slot right now.
+_job_owner: ContextVar[str | None] = ContextVar("asr_job_owner", default=None)
+_claimed_by: str | None = None
+
 
 def _is_cancel_requested() -> bool:
     with job_lock:
         return _cancel_requested
 
 
-def _request_cancel() -> None:
+def _request_cancel(owner: str | None = None) -> bool:
+    """Ask the in-flight job to stop at the next chunk boundary.
+
+    ``owner`` scopes the request to the job the caller started, so deleting a
+    queue item cannot cancel an unrelated manual transcription that claimed the
+    single slot first. Returns False when the request was ignored that way.
+    """
     global _cancel_requested
     with job_lock:
+        if owner is not None and _claimed_by != owner:
+            return False
         _cancel_requested = True
+        return True
+
+
+def _set_job_owner(value: str | None) -> None:
+    _job_owner.set(value)
 
 
 boot_state = {
@@ -721,7 +766,7 @@ def _boot_sequence():
     # complete.  This prevents a switch from racing with startup ASR load.
     _set_boot(phase="starting", switching=True)
 
-    # ── Pre-flight checks ─ fail in milliseconds with a clear message instead
+    # Pre-flight checks fail in milliseconds with a clear message instead
     # of spawning llama-server and waiting out its stderr/timeout path. Only
     # relative file names are exposed (never absolute install paths).
     _set_boot(ffmpeg_ok=shutil.which("ffmpeg") is not None)
@@ -956,7 +1001,7 @@ async def models_switch(req: dict = Body(default={})):
             return {"error": "busy", "detail": "backend is not ready"}
         _set_boot(switching=True, phase="asr_switching", ready=False, error=None)
 
-    # ── Validate user-controlled tuning params before touching the subprocess.
+    # Validate user-controlled tuning params before touching the subprocess.
     # These flow into llama-server argv; an unbounded ctx_size forces a
     # multi-GB KV-cache allocation (OOM) and a bad kv_quant leaves ASR
     # unloaded. Allowlist/clamp rather than passing values straight through.
@@ -1174,16 +1219,20 @@ def _gpu_swap_align(
             gpu_aligner.close()
             gpu_aligner = None
 
-        # 5. Reload ASR onto GPU (best-effort — if this fails the next
-        #    transcription will start a fresh server via _boot_sequence
-        #    or the user can restart the app).
+        # 5. Reload ASR onto GPU. Reload the model that was actually running,
+        #    not the built-in default: the user may have hot-swapped before this
+        #    job. If the reload fails there is no ASR server at all, so clear
+        #    the ready flag; otherwise the queue worker keeps claiming items and
+        #    each one burns the full retry ladder against a dead endpoint.
         set_job("aligning", 93, "Reloading ASR model...")
         try:
-            _start_asr()
+            _start_asr(**runner.current_config, model_name=runner.current_model)
             logger.info("ASR model reloaded after GPU swap")
         except Exception as e:
             logger.error("Failed to reload ASR after GPU swap: %s", e)
-            set_job("aligning", 93, "ASR reload failed — restart required")
+            _set_boot(ready=False, asr_loaded=False, phase="error",
+                      error=f"ASR reload after GPU alignment failed: {e}")
+            set_job("aligning", 93, "ASR reload failed — retry boot to recover")
 
         stats["align_time"] = round(time.monotonic() - t_align_start, 3)
 
@@ -1267,7 +1316,7 @@ async def transcribe(
     align_pool: ThreadPoolExecutor | None = None
 
     try:
-        # ── Video handling: extract (or reuse) a cached MP3 ───────────
+        # Video handling: extract (or reuse) a cached MP3
         try:
             if await asyncio.to_thread(is_video_file, src_path):
                 stats["source_was_video"] = True
@@ -1349,7 +1398,7 @@ async def transcribe(
         asr_segments_raw: list[dict] = []
         total = len(chunks)
 
-        # ── Alignment pipeline setup ───────────────────────────────────
+        # Alignment pipeline setup
         # CPU: CrispASR via ctypes, parallelized across chunks (pipelined
         #   with ASR to overlap GPU/CPU work).
         # GPU: official qwen-asr, loaded AFTER ASR finishes (llama-server
@@ -1364,7 +1413,7 @@ async def transcribe(
         gpu_align_jobs: list[tuple[Path, str, float]] = []
         t_align_start = time.monotonic() if (do_align_cpu or gpu_swap) else None
 
-        # ── Phase 1: ASR (+ pipelined alignment submission, CPU only) ──
+        # Phase 1: ASR (+ pipelined alignment submission, CPU only)
         # Per-chunk failure handling is three-tier:
         #   1. retry the same chunk (ASR sampling randomness → 500s usually
         #      succeed on retry),
@@ -1393,9 +1442,12 @@ async def transcribe(
             """
             raw_segments = data.get("segments") or []
             raw_segments = clean_segments(raw_segments)
-            # Raw (unshifted) segments feed resegment_words later.
+            # resegment_words matches these ends against *absolute* word times
+            # from the aligner, so they have to leave chunk-local coordinates
+            # here; extending the unshifted ones put the boundary bonus inside
+            # the first chunk only and left the rest of the file without it.
             if raw_segments:
-                asr_segments_raw.extend(raw_segments)
+                asr_segments_raw.extend(_shift_segments(raw_segments, start_offset))
 
             kept: list[dict] = []
             for seg in raw_segments:
@@ -1431,8 +1483,9 @@ async def transcribe(
                         norm_k, start_offset,
                     )
                     text = text[cut:].lstrip()
-                    # Drop leading kept segments fully inside the duplicate
-                    # (partial straddlers are kept whole - conservative).
+                    # Drop leading kept segments fully inside the duplicate,
+                    # then trim the straddler itself. Leaving it whole would put
+                    # words in the exported cues that merged_text no longer has.
                     remaining = norm_k
                     while kept and remaining > 0:
                         seg_norm = sum(
@@ -1443,6 +1496,18 @@ async def transcribe(
                             kept.pop(0)
                         else:
                             break
+                    if remaining > 0 and kept:
+                        head = kept[0].get("text", "")
+                        pos = eaten = 0
+                        while pos < len(head) and eaten < remaining:
+                            if not head[pos].isspace():
+                                eaten += 1
+                            pos += 1
+                        trimmed = head[pos:].lstrip()
+                        if trimmed:
+                            kept[0]["text"] = trimmed
+                        else:
+                            kept.pop(0)
 
             if kept:
                 all_segments.extend(kept)
@@ -1475,7 +1540,7 @@ async def transcribe(
                 )
                 prompt = last_chunk_text or None
 
-                # ── Tier 1: retry ─────────────────────────────────────────
+                # Tier 1: retry
                 try:
                     data = await _transcribe_chunk_retry(client, chunk_path, prompt)
                     last_chunk_text = _absorb(data, chunk_path, start_offset, prev_end)
@@ -1484,7 +1549,7 @@ async def transcribe(
                     tier1_err = str(e)
                     logger.warning("Chunk %d/%d failed after retries: %s", i, total, tier1_err)
 
-                # ── Tier 2: re-split into halves, try each ────────────────
+                # Tier 2: re-split into halves, try each
                 if ASR_RESPLIT:
                     # Run off the event loop: _resplit_chunk calls probe_duration
                     # + ffmpeg, which would otherwise stall /api/status and
@@ -1494,10 +1559,17 @@ async def transcribe(
                         logger.info("Chunk %d/%d: re-splitting into %d halves", i, total, len(halves))
                         half_ok = 0
                         half_texts: list[str] = []
-                        for half_path, local_off in halves:
+                        for half_no, (half_path, local_off) in enumerate(halves):
                             try:
                                 h_data = await _transcribe_chunk_retry(client, half_path, prompt)
-                                ht = _absorb(h_data, half_path, start_offset + local_off, start_offset + local_off)
+                                # The first half still carries this chunk's
+                                # overlap with the previous chunk; later halves
+                                # butt up against each other, so their own start
+                                # is the boundary.
+                                half_prev = (
+                                    prev_end if half_no == 0 else start_offset + local_off
+                                )
+                                ht = _absorb(h_data, half_path, start_offset + local_off, half_prev)
                                 half_texts.append(ht)
                                 half_ok += 1
                             except Exception as he:
@@ -1508,7 +1580,7 @@ async def transcribe(
                         if half_ok > 0:
                             last_chunk_text = " ".join(t for t in half_texts if t)
                             continue  # at least one half succeeded
-                # ── Tier 3: give up, skip ─────────────────────────────────
+                # Tier 3: give up, skip
                 logger.warning("Chunk %d/%d skipped after all recovery attempts", i, total)
                 # Sanitized summary only — the full tier1_err (which embeds the
                 # raw llama-server response body) is logged server-side above
@@ -1576,9 +1648,9 @@ async def transcribe(
         stats["char_count"] = len(merged_text)
         stats["segment_count"] = len(all_segments)
 
-        # ── Phase 2: Alignment ─────────────────────────────────────────
+        # Phase 2: Alignment
         if gpu_swap and gpu_align_jobs:
-            # ── GPU path: unload ASR, load aligner on GPU, realign, reload ASR
+            # GPU path: unload ASR, load aligner on GPU, realign, reload ASR
             assert t_align_start is not None
             # Run off the event loop: this blocks for seconds (model load +
             # inference + ASR reload); without to_thread it stalls /api/status
@@ -1590,7 +1662,7 @@ async def transcribe(
                 all_segments=all_segments, stats=stats, t_align_start=t_align_start,
             )
         elif do_align_cpu and align_futures:
-            # ── CPU path: drain CrispASR futures (most already completed) ─
+            # CPU path: drain CrispASR futures (most already completed)
             assert align_pool is not None and t_align_start is not None
             set_job("aligning", 85, "Finalizing forced alignment (CrispASR)...")
             total_align = len(align_futures)
@@ -1731,7 +1803,10 @@ async def align_standalone(
 
 @app.get("/api/history")
 async def history_list():
-    return {"items": history_store.list(limit=200)}
+    # glob + stat + json.loads over up to 200 whole records is real disk work;
+    # on the event loop it stalls the /api/status poll that runs every second.
+    items = await asyncio.to_thread(history_store.list, 200)
+    return {"items": items}
 
 
 @app.get("/api/history/{hid}")
@@ -1754,22 +1829,26 @@ async def history_clear():
     return {"cleared": n}
 
 
-@app.get("/api/audio-cache")
-async def audio_cache_list():
-    """List cached converted-audio MP3s with aggregate size."""
-    items = []
-    total = 0
-    for p in sorted(AUDIO_CACHE_DIR.glob("*.mp3"), key=lambda x: x.stat().st_mtime, reverse=True):
+def _audio_cache_snapshot() -> tuple[list[dict], int]:
+    """Scan the extracted-audio cache. Runs in a worker thread: globbing and
+    stat-ing hundreds of entries is disk work that must not block the loop, and
+    an entry evicted between glob and stat must not raise out of the sort."""
+    entries: list[tuple[str, int, float]] = []
+    for p in AUDIO_CACHE_DIR.glob("*.mp3"):
         try:
             st = p.stat()
         except OSError:
             continue
-        total += st.st_size
-        items.append({
-            "name": p.name,
-            "size": st.st_size,
-            "mtime": st.st_mtime,
-        })
+        entries.append((p.name, st.st_size, st.st_mtime))
+    entries.sort(key=lambda e: e[2], reverse=True)
+    items = [{"name": n, "size": sz, "mtime": mt} for n, sz, mt in entries]
+    return items, sum(e[1] for e in entries)
+
+
+@app.get("/api/audio-cache")
+async def audio_cache_list():
+    """List cached converted-audio MP3s with aggregate size."""
+    items, total = await asyncio.to_thread(_audio_cache_snapshot)
     return {"count": len(items), "size_bytes": total, "items": items}
 
 
@@ -1815,6 +1894,7 @@ queue_api.init(
     allowed_suffixes=_ALLOWED_UPLOAD_SUFFIXES,
     max_upload_bytes=MAX_UPLOAD_BYTES,
     request_cancel=_request_cancel,
+    set_job_owner=_set_job_owner,
     is_ready=lambda: bool(boot_state.get("ready")) and not boot_state.get("switching"),
 )
 app.include_router(queue_api.router)
