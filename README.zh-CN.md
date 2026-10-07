@@ -199,19 +199,16 @@ Qwen3-ASR1.7B-TsGUI/
 │   ├── asr-shell.spec                    # PyInstaller 配置（窗口模式 asr-shell.exe）
 │   └── start-shell.bat                   # 开发启动器
 ├── tools/
-│   ├── build_embed.py                    # 嵌入式 Python 分发构建
 │   └── subcompare.py                     # 字幕 WER/CER 对照
 ├── data/                                 # 运行期状态（gitignore）：history、queue、
 │                                         # audio_cache、chunk_cache、jobs、logs、webview_profile
 ├── .github/workflows/ci.yml              # 前端 typecheck+build，后端 mock 测试
 ├── environment.yml                       # conda 环境定义
-├── requirements-runtime.txt              # 嵌入式运行时依赖，不含开发/测试依赖
 ├── run.py                                # 入口：uvicorn，就绪后再开浏览器
 ├── asr-app.spec                          # PyInstaller 配置（浏览器模式 asr-app.exe）
 ├── setup.bat                             # 建 conda 环境并装依赖
 ├── start.bat                             # 开发启动，浏览器模式
 ├── build.bat                             # build.bat [app|shell|both]
-├── build-embed.bat                       # 一键嵌入式构建
 ├── README.md
 └── README.zh-CN.md
 ```
@@ -278,13 +275,6 @@ npm run dev
 build.bat app      # PyInstaller，Qwen3-ASR\asr-app.exe（系统浏览器）
 build.bat shell    # PyInstaller，Qwen3-ASR-Shell\asr-shell.exe（WebView2 窗口）
 build.bat both
-build-embed.bat    # tools/build_embed.py 输出到 Qwen3-ASR-Embed\
-```
-
-嵌入式那份不是 PyInstaller 打的包。它带一个独立的 Python 3.12 运行时，源码保持可编辑，`pip` 也能用，所以 GPU 对齐的依赖可以事后补进去：
-
-```powershell
-runtime\python.exe -m pip install qwen-asr torch transformers
 ```
 
 ## API

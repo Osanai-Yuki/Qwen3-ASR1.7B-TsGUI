@@ -199,19 +199,16 @@ Qwen3-ASR1.7B-TsGUI/
 │   ├── asr-shell.spec                    # PyInstaller spec (windowed asr-shell.exe)
 │   └── start-shell.bat                   # development launcher
 ├── tools/
-│   ├── build_embed.py                    # embeddable-Python distribution builder
 │   └── subcompare.py                     # subtitle WER/CER comparison
 ├── data/                                 # runtime state (gitignored): history, queue,
 │                                         # audio_cache, chunk_cache, jobs, logs, webview_profile
 ├── .github/workflows/ci.yml              # frontend typecheck+build, backend mocked tests
 ├── environment.yml                       # conda environment
-├── requirements-runtime.txt              # deps for the embedded runtime, no dev or test extras
 ├── run.py                                # uvicorn entrypoint, opens the browser once ready
 ├── asr-app.spec                          # PyInstaller spec (browser-mode asr-app.exe)
 ├── setup.bat                             # create the conda env and install dependencies
 ├── start.bat                             # launch in dev, browser mode
 ├── build.bat                             # build.bat [app|shell|both]
-├── build-embed.bat                       # one-click embeddable build
 ├── README.md
 └── README.zh-CN.md
 ```
@@ -278,13 +275,6 @@ npm run dev
 build.bat app      # PyInstaller, Qwen3-ASR\asr-app.exe (system browser)
 build.bat shell    # PyInstaller, Qwen3-ASR-Shell\asr-shell.exe (WebView2 window)
 build.bat both
-build-embed.bat    # tools/build_embed.py into Qwen3-ASR-Embed\
-```
-
-The embeddable build is not a PyInstaller bundle. It ships a standalone Python 3.12 runtime with the source left editable and `pip` working, which is how you add the GPU alignment dependencies after the fact:
-
-```powershell
-runtime\python.exe -m pip install qwen-asr torch transformers
 ```
 
 ## API
