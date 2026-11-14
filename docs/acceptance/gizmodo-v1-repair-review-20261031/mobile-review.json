@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-10-30T16:31:43.403Z",
+  "checks": [
+    {
+      "name": "mobile scrolling persists new anchor before navigation",
+      "pass": false,
+      "detail": {
+        "expected": 24,
+        "saved": {
+          "segment_index": 0,
+          "scroll_ratio": 0
+        },
+        "scrollY": 4000
+      }
+    },
+    {
+      "name": "mobile browser refresh restores newly read position",
+      "pass": false,
+      "detail": {
+        "expected": 24,
+        "restore": {
+          "visible": false,
+          "top": 3466.640625,
+          "scrollY": 506
+        }
+      }
+    },
+    {
+      "name": "A10 hidden selection stays in export scope",
+      "pass": false,
+      "detail": {
+        "before": "已选 1 项选择范围：当前批次已加载的任务，可跨筛选保留。可导出 1 项 · 可重试 0 项导出所选清除选择",
+        "after": "已选 1 项选择范围：当前批次已加载的任务，可跨筛选保留。可导出 0 项 · 可重试 0 项导出所选清除选择"
+      }
+    },
+    {
+      "name": "saved result resolution works",
+      "pass": true,
+      "detail": "saved"
+    }
+  ]
+}

@@ -69,7 +69,9 @@ def main():
 
     import uvicorn
     logger.info("Starting ASR server on %s:%s", host, port)
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info"))
+    app.state.request_shutdown = lambda: setattr(server, "should_exit", True)
+    server.run()
 
 
 if __name__ == "__main__":

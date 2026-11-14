@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Qwen ASR · Gizmodo 风格设计初稿</title><link rel="stylesheet" href="styles.css"><script src="prototype.js" defer></script><script src="views.js" defer></script></head>
+<body>
+<div class="draft-bar"><span>设计初稿 v1 · 示例数据 · 不连接转写服务</span><div><button data-action="advance">模拟完成一项</button><button data-action="reset">重置示例</button><a href="README.md">修改方案</a></div></div>
+<div class="app-frame">
+  <header class="masthead"><div class="machine"><span class="display date">2026.10.30</span><span><i aria-hidden="true"></i> 本地运行</span></div><button class="brand-pill display" data-action="library" aria-label="Qwen ASR，返回结果库">Qwen ASR</button><button class="new-button" data-action="import">新建转写 <span aria-hidden="true">＋</span></button><button class="more-button" data-action="menu" aria-label="打开更多设置">•••</button></header>
+  <nav class="main-nav" aria-label="主导航"><div class="nav-links"><button id="nav-tasks" data-action="tasks">任务中心 <span id="pending-count" class="pending-count">5</span></button><button id="nav-library" data-action="library">结果库</button></div><button class="mobile-batches" data-action="batches">批次</button><div class="runtime"><span class="status-dot running" aria-hidden="true"></span><span id="runtime-label">正在处理</span></div></nav>
+  <div class="workspace"><main id="main" tabindex="-1"></main><aside class="sidebar" aria-label="搜索、任务与批次">
+    <section class="sidebar-search"><label class="global-search"><span class="search-disc" aria-hidden="true"><svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="10.6" cy="10.6" r="5.9"></circle><path d="M15.1 15.1 19.4 19.4"></path></svg></span><input id="global-search" type="search" placeholder="查找会议、访谈或原话" aria-label="搜索全部结果" autocomplete="off"></label><div id="sidebar-filters" class="tag-list"></div></section>
+    <section id="queue-context" class="side-section"></section>
+    <section class="side-section" id="batch-context"><div class="side-heading"><h2 class="display">Batches</h2><span>最近批次</span></div><div id="batch-nav"></div></section>
+    <section id="context-results" class="side-section" hidden></section>
+    <p class="local-note">音视频在本机处理。<br>桌面退出将停止处理，未完成文件下次从头处理。</p>
+  </aside></div>
+  <footer class="app-footer"><span id="context-hint">结果保留原文件与来源，便于之后查找。</span><span>Qwen3-ASR · 本地工作空间</span></footer>
+</div>
+  <dialog id="import-dialog" aria-labelledby="import-title">
+    <div class="dialog-heading"><div><h2 id="import-title">新建转写批次</h2><p>确认文件与设置后，再加入处理。</p></div><button class="icon-button" data-action="close-import" aria-label="关闭新建批次">×</button></div>
+    <div class="dialog-body">
+      <label class="field-label" for="batch-name">批次名称</label><input id="batch-name" class="input" value="视频转写 2026-10-30" maxlength="80">
+      <div id="drop-area" class="drop-area"><p>把视频拖到这里</p><div><button class="button" data-action="pick-folder">选择文件夹</button><button class="button" data-action="pick-files">选择文件</button><button class="text-button" data-action="sample">使用示例文件</button></div><span>保留文件夹结构；相同文件名会分别列出。</span></div>
+      <input id="file-picker" type="file" multiple hidden accept=".mp4,.mkv,.mov,.avi,.webm,.flv,.m4v,.wmv,.mpg,.mpeg,.ts,.3gp,.vob,.ogv,.wav,.mp3,.flac,.ogg,.m4a">
+      <input id="folder-picker" type="file" multiple webkitdirectory hidden>
+      <div class="import-summary" id="import-summary">尚未选择文件</div><div id="import-list" class="import-list"></div>
+      <div class="import-options"><label><input type="checkbox" id="align-option"> 生成词级时间戳 <span class="subtle">处理时间较长</span></label><label>默认导出格式 <select id="import-format"><option>SRT</option><option>TXT</option><option>VTT</option></select></label></div>
+      <p class="inline-note" id="import-order">将加入当前批次之后；不会中断正在处理的文件。</p>
+    </div>
+    <div class="dialog-footer"><span class="subtle">示意稿不会读取文件内容或调用转写服务。</span><button class="button primary" id="submit-import" data-action="submit-import" disabled>加入待处理</button></div>
+  </dialog>
+
+  <dialog id="export-dialog" aria-labelledby="export-title">
+    <div class="dialog-heading"><div><h2 id="export-title">导出转写结果</h2><p id="export-summary"></p></div><button class="icon-button" data-action="close-export" aria-label="关闭导出">×</button></div>
+    <div class="dialog-body export-body">
+      <label class="field-label" for="export-format">字幕格式</label><select id="export-format" class="input"><option>SRT</option><option>VTT</option><option>TXT</option><option>ASS</option><option>JSON</option></select>
+      <label class="check-option"><input type="checkbox" checked id="keep-folders">保留来源文件夹结构</label>
+      <label class="check-option" id="partial-option"><input type="checkbox" id="include-partial">包含有缺失的结果 <span class="warning-text">导出内容可能不完整</span></label>
+      <div class="export-preview"><strong>一个 ZIP 文件，包含所选字幕与批次清单</strong><p>原视频名对应字幕名；同名文件按目录区分。失败、等待中的文件会列入清单。</p></div>
+    </div>
+    <div class="dialog-footer"><span class="subtle">导出流程示意，不生成实际下载。</span><button class="button primary" id="submit-export" data-action="submit-export">准备导出</button></div>
+  </dialog>
+
+  <dialog id="storage-dialog" aria-labelledby="storage-title">
+    <div class="dialog-heading"><div><h2 id="storage-title">任务与回听文件</h2><p>文字结果和回听音频分别保存。</p></div><button class="icon-button" data-action="close-storage" aria-label="关闭存储说明">×</button></div>
+    <div class="dialog-body"><p>归档批次后，文字与结果入口继续保留。</p><p>清理回听音频可释放空间；之后仍可阅读文字，重新关联原文件可恢复回听。</p><p class="inline-note">当前桌面模式退出会停止处理。重新打开后，未完成文件会从头处理；完整结果会保留。</p></div>
+    <div class="dialog-footer"><button class="button" data-action="close-storage">知道了</button></div>
+  </dialog>
+<dialog id="menu-dialog" aria-labelledby="menu-title"><div class="dialog-heading"><div><h2 id="menu-title" class="display">Workspace</h2><p>模型、存储与工作空间</p></div><button class="icon-button" data-action="close-menu" aria-label="关闭设置">×</button></div><div class="dialog-body menu-grid"><section><h3>模型状态</h3><dl><dt>转写模型</dt><dd>Qwen3-ASR-1.7B</dd><dt>处理方式</dt><dd>单文件串行处理</dd><dt>语种</dt><dd>自动检测</dd></dl><p class="subtle">这里展示示例配置；正式界面读取本机实际状态。</p></section><section><h3>存储与查看</h3><p>文字结果与回听音频分别保存。归档批次后，结果继续可以找到。</p><button class="button" data-action="storage">查看存储与退出说明</button></section></div><div class="dialog-footer"><span class="subtle">展示字已本地加载，页面预览不需要外网。</span><button class="button primary" data-action="close-menu">完成</button></div></dialog><dialog id="batches-dialog" aria-labelledby="batches-title"><div class="dialog-heading"><div><h2 id="batches-title">选择批次</h2><p>任务与结果都保留在原来的批次中。</p></div><button class="icon-button" data-action="close-batches" aria-label="关闭批次选择">×</button></div><div class="dialog-body" id="mobile-batch-list"></div></dialog><div id="toast" class="toast" role="status" aria-live="polite"></div></body></html>

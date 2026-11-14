@@ -1,0 +1,129 @@
+{
+  "date": "2026-10-30",
+  "scope": "Standalone design draft, not production ASR",
+  "checks": [
+    {
+      "label": "default result library and 8 available sample results",
+      "passed": true
+    },
+    {
+      "label": "real display font loaded locally",
+      "passed": true
+    },
+    {
+      "label": "1440px library has no page overflow",
+      "passed": true
+    },
+    {
+      "label": "1280px library fits",
+      "passed": true
+    },
+    {
+      "label": "task center shows 12 source files",
+      "passed": true
+    },
+    {
+      "label": "task controls fit with at least 300px for files",
+      "passed": true
+    },
+    {
+      "label": "view sort does not change execution order",
+      "passed": true
+    },
+    {
+      "label": "attention shows failure and partial result",
+      "passed": true
+    },
+    {
+      "label": "partial result opens with warning",
+      "passed": true
+    },
+    {
+      "label": "reader search has highlighted hits",
+      "passed": true
+    },
+    {
+      "label": "completion preserves reader, query and focus",
+      "passed": true
+    },
+    {
+      "label": "return keeps task filter",
+      "passed": true
+    },
+    {
+      "label": "explicit interview category includes all four samples",
+      "passed": true
+    },
+    {
+      "label": "content search finds meeting source text",
+      "passed": true
+    },
+    {
+      "label": "search result opens",
+      "passed": true
+    },
+    {
+      "label": "browser Back restores search context",
+      "passed": true
+    },
+    {
+      "label": "bulk export defaults to 7 complete results",
+      "passed": true
+    },
+    {
+      "label": "partial export inclusion explicit",
+      "passed": true
+    },
+    {
+      "label": "import retains same-name different-source files",
+      "passed": true
+    },
+    {
+      "label": "import creates batch with configuration",
+      "passed": true
+    },
+    {
+      "label": "pause stops scheduling after current file",
+      "passed": true
+    },
+    {
+      "label": "960px tasks fit without page overflow",
+      "passed": true
+    },
+    {
+      "label": "narrow view supports batch switch",
+      "passed": true
+    },
+    {
+      "label": "390px library fits with search before content",
+      "passed": true
+    },
+    {
+      "label": "390px reader fits",
+      "passed": true
+    },
+    {
+      "label": "200 percent equivalent CSS viewport reflows",
+      "passed": true
+    },
+    {
+      "label": "No external requests needed",
+      "passed": true
+    },
+    {
+      "label": "No JavaScript runtime errors",
+      "passed": true
+    }
+  ],
+  "platformFonts": {
+    "fonts": [
+      {
+        "familyName": "Special Gothic Expanded One",
+        "postScriptName": "SpecialGothicExpandedOne-Regular",
+        "isCustomFont": true,
+        "glyphCount": 8
+      }
+    ]
+  },
+  "externalRequests": []
+}

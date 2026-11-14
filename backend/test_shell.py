@@ -62,6 +62,24 @@ def test_security_headers_on_responses():
     assert r.headers.get("x-content-type-options") == "nosniff"
 
 
+def test_shutdown_invokes_registered_callback_and_rejects_cross_origin(monkeypatch):
+    client = make_client()
+    calls = []
+    monkeypatch.setattr(main_mod.app.state, "request_shutdown", lambda: calls.append(True), raising=False)
+    blocked = client.post("/api/shutdown", headers={"Origin": "https://example.com"})
+    assert blocked.status_code == 403
+    assert calls == []
+    response = client.post("/api/shutdown")
+    assert response.json() == {"shutting_down": True}
+    assert calls == [True]
+
+
+def test_shutdown_unavailable_without_host_callback(monkeypatch):
+    client = make_client()
+    monkeypatch.delattr(main_mod.app.state, "request_shutdown", raising=False)
+    assert client.post("/api/shutdown").status_code == 503
+
+
 def test_llamarunner_api_key_in_argv(tmp_path):
     with_key = LlamaRunner(
         bin_path=str(tmp_path / "llama-server.exe"), api_key="sekret",
@@ -74,6 +92,72 @@ def test_llamarunner_api_key_in_argv(tmp_path):
     without = LlamaRunner(bin_path=str(tmp_path / "llama-server.exe"))
     without._model_path = tmp_path / "m.gguf"
     assert "--api-key" not in without.build_cmd()
+
+
+def test_close_confirmation_only_when_work_remains():
+    """The desktop close prompt describes interrupted work, not saved results."""
+    from shell.shell_main import close_confirmation_message
+
+    assert close_confirmation_message(None) is None
+    assert close_confirmation_message({"active_id": None, "items": [{"status": "done"}]}) is None
+    waiting = close_confirmation_message({
+        "active_id": None,
+        "items": [{"id": "a" * 12, "status": "queued"}, {"id": "b" * 12, "status": "queued"}],
+    })
+    assert waiting and "2 个文件等待处理" in waiting
+    running = close_confirmation_message({
+        "active_id": "a" * 12,
+        "items": [{"id": "a" * 12, "status": "running"}],
+    })
+    assert running and "正在处理" in running
+    for message in (waiting, running):
+        assert "退出桌面应用会停止本地处理" in message
+        assert "重开后未完成文件从头处理" in message
+        assert "已保存结果保留" in message
+
+
+class _FakeWindow:
+    def __init__(self, answer=True, fail=False):
+        self.answer = answer
+        self.fail = fail
+        self.calls = []
+
+    def create_confirmation_dialog(self, title, message):
+        self.calls.append((title, message))
+        if self.fail:
+            raise RuntimeError("no dialog")
+        return self.answer
+
+
+def test_close_handler_cancels_when_user_declines():
+    from shell.shell_main import make_close_handler
+
+    snapshot = {"active_id": "a" * 12, "items": [{"id": "a" * 12, "status": "running"}]}
+    window = _FakeWindow(answer=False)
+    assert make_close_handler(window, lambda: snapshot)() is False
+    assert len(window.calls) == 1
+
+    window = _FakeWindow(answer=True)
+    assert make_close_handler(window, lambda: snapshot)() is True
+    assert len(window.calls) == 1
+
+
+def test_close_handler_skips_dialog_when_idle_or_broken():
+    from shell.shell_main import make_close_handler
+
+    window = _FakeWindow()
+    idle = {"active_id": None, "items": [{"status": "done"}]}
+    assert make_close_handler(window, lambda: idle)() is True
+    assert window.calls == []
+
+    working = {"active_id": None, "items": [{"status": "queued"}]}
+    failing_window = _FakeWindow(fail=True)
+    assert make_close_handler(failing_window, lambda: working)() is True
+
+    def broken():
+        raise OSError("queue unreadable")
+
+    assert make_close_handler(_FakeWindow(), broken)() is True
 
 
 def test_transcribe_chunk_sends_bearer(monkeypatch):

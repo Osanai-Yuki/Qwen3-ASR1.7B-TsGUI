@@ -1,0 +1,109 @@
+{
+  "generated_at": "2026-10-30T17:10:33+00:00",
+  "git_branch": "feat/gizmodo-workspace",
+  "git_head": "12ce995c06f78e135c46f1453e888adfdec66235",
+  "python": "3.12.13",
+  "chrome": "Chrome/156.0.8078.79 (recorded during the browser run)",
+  "files": [
+    {
+      "path": "backend/history.py",
+      "sha256": "ca55ac3f51a548a3fe25f6c5d15b1821db6d6f0af4221eaa73718f202c98f929",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "backend/queue_api.py",
+      "sha256": "df57a1d324b9fe504b6cef7201a434339e5b3d747b6caa92a52abb7d6688c6f9",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "backend/queue_store.py",
+      "sha256": "7d1e29f7911eeddf337a7cfb34474c25d9a3b49609b517778b375a417cda8f1e",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "backend/pending_results.py",
+      "sha256": "61134bccd1b08d419bc75710fff10a7d23e727d8f7e40961a3c3ade7feebda9e",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "backend/main.py",
+      "sha256": "2ac50e172ff473ad2b6ecc3440c6a77e97f8e4fb7a4f4068bf746376488c5a2a",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "backend/test_repair.py",
+      "sha256": "e213bae49431d6ef8d8c5de02b1a1c6c130bf0e7dc8c53c71551931181e5ef8f",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "backend/test_repair_review.py",
+      "sha256": "75ba463c5534feacd570b232ed346f7ed49bf446f6e6d171920703b5799e53ef",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "backend/test_shell.py",
+      "sha256": "d6a7d4053f18b74c1afd743b78a9413e668054c41f1c18dfe22ae47f2420af05",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "shell/shell_main.py",
+      "sha256": "81e762ecccf44341e669419f4bf7d094e7328a37cb1c5e588c7152966e0a0623",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "frontend/src/Workspace.tsx",
+      "sha256": "b08f9d4a601974677f79bd968ad88c06f783a846f5aa9f416fec76ade9127292"
+    },
+    {
+      "path": "frontend/src/utils/exportPlan.ts",
+      "sha256": "8bd9d7088c2f654c9ac1d66400341adaadb37e5fcb326c1bae0d99e16462f639"
+    },
+    {
+      "path": "frontend/src/api.ts",
+      "sha256": "ed192c7e17e31e2136e39d60eac21d161ffe1075d4abbecc94d86da15c836cef"
+    },
+    {
+      "path": "frontend/src/index.css",
+      "sha256": "25d87ab2af1d679cf58bf93329b668eb9bf77c0583dcfb3690c70157f7109b47"
+    },
+    {
+      "path": "frontend/package.json",
+      "sha256": "a09fd742724dab72f983487679f0e662d8dcc5f2da630bfebcaf21cb07e7fb4e"
+    },
+    {
+      "path": "frontend/tests/exportPlan.test.mjs",
+      "sha256": "d8549e1a23ec1e7c7dc6e0b787e8eb75f804dcd3e8e45d36280713c7ea36d51b"
+    },
+    {
+      "path": "frontend/dist/index.html",
+      "sha256": "c2ccadab9a870f0cd0722e6e37972e914f9551fe34ab6737bd6990c7fa96ead9",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "frontend/dist/assets/index-Wo95jN-5.css",
+      "sha256": "1b51ff54ef56cc6ab5441b330d2eb52cad44c36ad4d8092aa5e640e2c0bb8aa8",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": "frontend/dist/assets/index-CFMVZlAm.js",
+      "sha256": "c4c291ff51d1b01547475548ad10cae4b91e0d18543c9e7fbc336c8829e5aaf0",
+      "final_runtime_matches": true,
+      "fixture_runtime_matches": true
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "02194e867cbc55f3e1e96cbc94565936927c0ac10e69eafcd36c54c41484eded"
+    }
+  ]
+}

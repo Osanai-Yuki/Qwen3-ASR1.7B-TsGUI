@@ -1,0 +1,138 @@
+{
+  "generated_at": "2026-10-30T17:05:44.460Z",
+  "checks": [
+    {
+      "name": "plain-text search counts highlights without a no-match message",
+      "pass": true,
+      "detail": {
+        "status": "1 / 80 处",
+        "marks": 80,
+        "zero": ""
+      }
+    },
+    {
+      "name": "paragraph search exposes prev/next and positions the hit",
+      "pass": true,
+      "detail": {
+        "status": "1 / 1 处",
+        "buttons": [
+          {
+            "text": "上一处",
+            "disabled": false
+          },
+          {
+            "text": "下一处",
+            "disabled": false
+          }
+        ],
+        "markVisible": true,
+        "top": 663,
+        "viewport": 820
+      }
+    },
+    {
+      "name": "hidden selection keeps full export/retry scope",
+      "pass": true,
+      "detail": {
+        "beforeFilter": "已选 2 项选择范围：当前批次，可跨筛选保留。可导出 1 项 · 可重试 1 项导出所选批量重新处理清除选择",
+        "afterFilter": {
+          "bar": "已选 2 项选择范围：当前批次，可跨筛选保留（其中 2 项在当前筛选外）。可导出 1 项 · 可重试 1 项导出所选批量重新处理清除选择",
+          "retry": {
+            "text": "批量重新处理",
+            "disabled": false
+          },
+          "rows": 1
+        },
+        "picked": {
+          "a": true,
+          "c": true
+        }
+      }
+    },
+    {
+      "name": "mobile scroll saves a new anchor and reload restores it",
+      "pass": true,
+      "detail": {
+        "saved": {
+          "segment_index": 61,
+          "within_block_ratio": 0,
+          "scroll_ratio": 0.9436187780136824
+        },
+        "beforeReload": {
+          "segmentIndex": 61,
+          "paragraphs": 72,
+          "lines": 0,
+          "chosenText": "第 62 段 普通内容，用于滚动与检索。",
+          "visible": true,
+          "top": 61,
+          "bottom": 95,
+          "viewport": 844,
+          "firstVisible": "第 61 段 普通内容，用于滚动与检索。",
+          "scrollY": 4000
+        },
+        "afterReload": {
+          "segmentIndex": 61,
+          "paragraphs": 72,
+          "lines": 0,
+          "chosenText": "第 62 段 普通内容，用于滚动与检索。",
+          "visible": true,
+          "top": 405,
+          "bottom": 439,
+          "viewport": 844,
+          "firstVisible": "第 54 段 普通内容，用于滚动与检索。",
+          "scrollY": 3656
+        }
+      }
+    },
+    {
+      "name": "plain-text mobile scroll restores a character anchor",
+      "pass": true,
+      "detail": {
+        "saved": {
+          "text_offset": 816,
+          "scroll_ratio": 0.404749055585537
+        },
+        "before": {
+          "text": "第 26 行 独立复验 记录：本段用于检查纯文本查找计数与高亮。",
+          "visible": true,
+          "top": 89
+        },
+        "after": {
+          "text": "第 26 行 独立复验 记录：本段用于检查纯文本查找计数与高亮。",
+          "visible": true,
+          "top": 0,
+          "viewport": 844
+        }
+      }
+    },
+    {
+      "name": "breakpoint change keeps the saved segment in view",
+      "pass": true,
+      "detail": {
+        "saved": {
+          "segment_index": 40,
+          "within_block_ratio": 0,
+          "scroll_ratio": 0.6571741511500547
+        },
+        "afterBreakpoint": {
+          "segmentIndex": 40,
+          "paragraphs": 72,
+          "lines": 0,
+          "chosenText": "第 41 段 普通内容，用于滚动与检索。",
+          "visible": true,
+          "top": 405,
+          "bottom": 439,
+          "viewport": 844,
+          "firstVisible": "第 33 段 普通内容，用于滚动与检索。",
+          "scrollY": 2560
+        }
+      }
+    },
+    {
+      "name": "no unhandled browser exceptions",
+      "pass": true,
+      "detail": []
+    }
+  ],
+  "pass": true
+}

@@ -117,6 +117,63 @@ def _message_box(text: str, title: str = WINDOW_TITLE) -> None:
         pass
 
 
+def close_confirmation_message(snapshot: dict | None) -> str | None:
+    """Native close prompt text, or None when no work would be interrupted.
+
+    Only queue state decides: saved results survive a restart anyway, so
+    prompting about them would train the user to click through the dialog.
+    """
+    if not snapshot:
+        return None
+    items = snapshot.get("items") or []
+    unfinished = [
+        item for item in items
+        if item.get("status") in ("queued", "running")
+    ]
+    if not unfinished:
+        return None
+    active = snapshot.get("active_id")
+    running = any(
+        item.get("status") == "running" or (active is not None and item.get("id") == active)
+        for item in unfinished
+    )
+    head = "当前有文件正在处理。" if running else f"还有 {len(unfinished)} 个文件等待处理。"
+    return (
+        head
+        + "\n\n退出桌面应用会停止本地处理；重开后未完成文件从头处理，已保存结果保留。"
+        + "\n\n确定退出吗？"
+    )
+
+
+def make_close_handler(window, snapshot_fn):
+    """Build the pywebview ``closing`` handler.
+
+    The event is cancelable: returning False keeps the window open, so a
+    declined prompt must never reach ``closed``/shutdown.  A dialog failure
+    must not trap the user either — in that case the close proceeds.
+    """
+    def on_closing(*_args) -> bool:
+        try:
+            snapshot = snapshot_fn()
+        except Exception:
+            logger.exception("Could not read queue state before closing")
+            snapshot = None
+        message = close_confirmation_message(snapshot)
+        if message is None:
+            return True
+        try:
+            approved = window.create_confirmation_dialog("退出 Qwen3-ASR", message)
+        except Exception:
+            logger.exception("Could not show the close confirmation")
+            return True
+        if not approved:
+            logger.info("User cancelled closing; keeping the shell open")
+            return False
+        return True
+
+    return on_closing
+
+
 def main() -> None:
     _ensure_std_streams()
     _setup_logging()
@@ -180,6 +237,10 @@ def main() -> None:
         time.sleep(1.0)  # give lifespan shutdown a moment to run
         os._exit(0)
 
+    # If WebView2 is unavailable, the browser fallback still needs to stop
+    # both the embedded server and the shell process.
+    backend_main.app.state.request_shutdown = shutdown
+
     try:
         import webview  # noqa: E402
 
@@ -208,7 +269,23 @@ def main() -> None:
                     webbrowser.open(url)
 
         window.events.loaded += on_loaded
+
+        def _queue_snapshot() -> dict | None:
+            # The queue lives in this process; reading it directly is both
+            # accurate and avoids opening an authenticated HTTP round-trip.
+            from backend import queue_api as queue_mod
+            return queue_mod.store.snapshot() if queue_mod.store is not None else None
+
+        approved_exit = threading.Event()
+        close_handler = make_close_handler(window, _queue_snapshot)
+        window.events.closing += lambda *_args: True if approved_exit.is_set() else close_handler()
         window.events.closed += shutdown
+
+        def exit_from_page() -> None:
+            approved_exit.set()
+            window.destroy()
+
+        backend_main.app.state.request_shutdown = exit_from_page
 
         smoke = float(os.environ.get("ASR_SHELL_SMOKE", "0") or 0)
         if smoke > 0:

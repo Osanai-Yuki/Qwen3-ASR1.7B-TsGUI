@@ -1,0 +1,37 @@
+{
+  "id": "903d74fbcf54",
+  "task_id": "8c0e6bfee74b",
+  "attempt_id": "5e2af33d2961",
+  "result_version": 1,
+  "persistence_state": "saved",
+  "text": "Welcome to the project acceptance meeting. Today we are checking the speech transcription system. The next meeting will begin at 9 o'clock tomorrow morning.",
+  "timing": {
+    "level": "none",
+    "source": "asr",
+    "alignment_requested": false,
+    "alignment_succeeded": false,
+    "segment_count": 0,
+    "word_count": 24,
+    "fallback_reason": "alignment_not_requested"
+  },
+  "stats": {
+    "filename": "独立复查真实转写.wav",
+    "file_size": 453060,
+    "audio_duration": 10.272,
+    "chunk_count": 1,
+    "chunk_seconds": 25.0,
+    "asr_time": 1.422,
+    "align_time": 0.0,
+    "total_time": 1.719,
+    "rtf": 0.167,
+    "char_count": 156,
+    "segment_count": 0,
+    "word_count": 24,
+    "aligner_used": false,
+    "model": "Qwen3-ASR-1.7B-Q8_0",
+    "aligner_model": null,
+    "source_was_video": false,
+    "audio_cache_name": null,
+    "mp3_bitrate": null
+  }
+}

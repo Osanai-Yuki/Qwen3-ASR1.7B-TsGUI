@@ -6,6 +6,7 @@ import time
 import wave
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -679,7 +680,11 @@ def test_llama_runner_stops_process_on_startup_failure(tmp_path, monkeypatch):
         def returncode(self):
             return self._returncode
 
+    def unavailable_health(*_args, **_kwargs):
+        raise httpx.ConnectError("mock llama-server unavailable")
+
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    monkeypatch.setattr("backend.llamarunner.httpx.get", unavailable_health)
     with pytest.raises(RuntimeError):
         runner.start(model_path=str(tmp_path / "model.gguf"))
     assert runner.process is None

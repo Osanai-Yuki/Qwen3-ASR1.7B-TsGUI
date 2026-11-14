@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.767" timestamp="2026-10-31T00:31:31.157196+08:00" hostname="DESKTOP-V1HJCBB"><testcase classname="test_independent_review" name="test_interrupted_save_can_be_retried_after_restart" time="0.027"><failure message="AssertionError: {'save_status': 409, 'body': {'error': 'conflict', 'detail': 'a save for this attempt is already in progress; retry once it finishes'}, 'state': {'id': 'bc01c50036f1', 'filename': 'sample.wav', 'title': 'sample', 'batch_id': None, ...}}&#10;assert 409 == 200&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">tmp_path = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/repair-review-20261031/restart-edge-tmp/test_interrupted_save_can_be_r0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x0000020916107C50&gt;
+
+    def test_interrupted_save_can_be_retried_after_restart(tmp_path, monkeypatch):
+        client, store, item, staged = setup_failed(tmp_path, monkeypatch)
+        attempt = store.get(item["id"])["attempt_id"]
+        assert store.try_claim_save(item["id"], attempt) == "claimed"
+        # Crash before history commit: no process still owns the persisted claim.
+        restarted = QueueStore(tmp_path / "queue")
+        qapi.store = restarted
+        qapi.reconcile_attempts()
+        r = client.post(f"/api/queue/items/{item['id']}/save", json={"attempt_id": attempt})
+&gt;       assert r.status_code == 200, {
+            "save_status": r.status_code, "body": r.json(), "state": restarted.get(item["id"])
+        }
+E       AssertionError: {'save_status': 409, 'body': {'error': 'conflict', 'detail': 'a save for this attempt is already in progress; retry once it finishes'}, 'state': {'id': 'bc01c50036f1', 'filename': 'sample.wav', 'title': 'sample', 'batch_id': None, ...}}
+E       assert 409 == 200
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+test_independent_review.py:118: AssertionError</failure></testcase></testsuite></testsuites>

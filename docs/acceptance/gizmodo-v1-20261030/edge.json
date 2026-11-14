@@ -1,0 +1,113 @@
+{
+  "phase": "edge",
+  "generated_at": "2026-10-30T04:29:43.215Z",
+  "checks": [
+    {
+      "name": "short window shows task actions without nested clipping",
+      "pass": false,
+      "details": {
+        "main": {
+          "x": 40,
+          "y": 204,
+          "width": 873,
+          "height": 206,
+          "top": 204,
+          "right": 913,
+          "bottom": 410,
+          "left": 40
+        },
+        "toolbar": {
+          "x": 40,
+          "y": 368.375,
+          "width": 858,
+          "height": 40,
+          "top": 368.375,
+          "right": 898,
+          "bottom": 408.375,
+          "left": 40
+        },
+        "table": {
+          "x": 40,
+          "y": 419.375,
+          "width": 858,
+          "height": 267.796875,
+          "top": 419.375,
+          "right": 898,
+          "bottom": 687.171875,
+          "left": 40
+        },
+        "windowHeight": 420
+      },
+      "criterion": "task table must expose at least 100 px below toolbar"
+    },
+    {
+      "name": "main mobile task actions approximately 44px",
+      "pass": false,
+      "details": [
+        {
+          "text": "新建转写＋",
+          "height": 44,
+          "width": 116
+        },
+        {
+          "text": "任务中心 0",
+          "height": 43,
+          "width": 79.578125
+        },
+        {
+          "text": "结果库",
+          "height": 43,
+          "width": 38
+        },
+        {
+          "text": "查看结果",
+          "height": 28,
+          "width": 48
+        },
+        {
+          "text": "查看缺失",
+          "height": 28,
+          "width": 48
+        },
+        {
+          "text": "重新处理",
+          "height": 28,
+          "width": 48
+        },
+        {
+          "text": "查看缺失",
+          "height": 28,
+          "width": 48
+        },
+        {
+          "text": "重新处理",
+          "height": 28,
+          "width": 48
+        },
+        {
+          "text": "查看结果",
+          "height": 28,
+          "width": 48
+        }
+      ]
+    },
+    {
+      "name": "no-align timestamp limitation clearly disclosed",
+      "pass": false,
+      "details": {
+        "lines": 0,
+        "text": "Welcome to the project acceptance meeting. Today we are checking the speech transcription system. The next meeting will begin at 9 o'clock tomorrow morning.",
+        "tail": "时间戳来自转写结果。 文字与音轨缓存分开保存。"
+      }
+    },
+    {
+      "name": "text-only result SRT retains full text",
+      "pass": true,
+      "details": {
+        "file": "真实语音转写-B.srt",
+        "cues": 1,
+        "content": "1\n00:00:00,000 --> 00:00:10,272\nWelcome to the project acceptance meeting. Today we are checking the speech transcription system. The next meeting will begin at 9 o'clock tomorrow morning."
+      }
+    }
+  ]
+}

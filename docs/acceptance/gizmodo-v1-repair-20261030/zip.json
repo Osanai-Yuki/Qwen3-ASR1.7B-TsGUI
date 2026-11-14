@@ -1,0 +1,45 @@
+[
+  {
+    "source": "real UI export (TXT, 3 selected results incl. a manifest-name collision)",
+    "entryCount": 4,
+    "entries": [
+      "同名目录/重复名称__b75b70d0.txt",
+      "同名目录/重复名称.txt",
+      "同名目录/export-manifest.txt",
+      "export-manifest.json"
+    ],
+    "manifest": {
+      "format": "TXT",
+      "included": [
+        {
+          "id": "b75b70d0b9e2",
+          "title": "重复名称",
+          "path": "同名目录/重复名称__b75b70d0.txt",
+          "integrity": "complete"
+        },
+        {
+          "id": "9166dadd8f9e",
+          "title": "重复名称",
+          "path": "同名目录/重复名称.txt",
+          "integrity": "complete"
+        },
+        {
+          "id": "0a939446336e",
+          "title": "export-manifest",
+          "path": "同名目录/export-manifest.txt",
+          "integrity": "complete"
+        }
+      ],
+      "excluded_partial": []
+    },
+    "manifest_paths_match_archive": true,
+    "entries_unique_case_insensitively": true,
+    "crc32_all_valid": true,
+    "every_included_path_has_content": true,
+    "collision_suffix_stable": "suffix is the first 8 chars of the result identity (b75b70d0), independent of selection order",
+    "before": {
+      "manifest_paths_match_archive": false,
+      "detail": "both included entries were written as 同名目录/重复名称.txt while the archive held 重复名称.txt and 重复名称_2.txt"
+    }
+  }
+]

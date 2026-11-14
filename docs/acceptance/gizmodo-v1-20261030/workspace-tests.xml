@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="9" time="1.100" timestamp="2026-10-30T12:30:50.285148+08:00" hostname="DESKTOP-V1HJCBB"><testcase classname="test_workspace_acceptance" name="test_search_past_200_records" time="0.201" /><testcase classname="test_workspace_acceptance" name="test_versions_and_single_task_in_batch" time="0.007" /><testcase classname="test_workspace_acceptance" name="test_view_is_persistent" time="0.005" /><testcase classname="test_workspace_acceptance" name="test_legacy_cancelled_is_partial" time="0.005" /><testcase classname="test_workspace_acceptance" name="test_completed_cleanup_preserves_errors_and_cancel" time="0.011" /><testcase classname="test_workspace_acceptance" name="test_partial_upload_receipt" time="0.012" /><testcase classname="test_workspace_acceptance" name="test_save_failure_cannot_reuse_old_result" time="0.012" /><testcase classname="test_workspace_acceptance" name="test_save_failure_keeps_source_recoverable" time="0.010"><failure message="AssertionError: save failed but source deleted, no reader record and no retry&#10;assert False&#10; +  where False = exists()&#10; +    where exists = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/acceptance-20261030/pytest-workspace-final/test_save_failure_keeps_source0/queue/uploads/x.wav').exists">tmp_path = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/acceptance-20261030/pytest-workspace-final/test_save_failure_keeps_source0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002AE2B279250&gt;
+
+    def test_save_failure_keeps_source_recoverable(tmp_path,monkeypatch):
+        make_client(tmp_path=tmp_path);s=QueueStore(tmp_path/'queue');qapi.store=s
+        item=s.add(qid=s.new_id(),filename='x.wav',staged_name='x.wav',size=1,align=False)
+        staged=s.uploads_dir/'x.wav';staged.write_bytes(b'x')
+        async def transcribe(**kwargs): return {'history_id':None,'text':'available text','segments':[],'stats':{}}
+        monkeypatch.setitem(qapi._deps,'transcribe_fn',transcribe)
+        asyncio.run(qapi.process_next_once())
+&gt;       assert staged.exists(), 'save failed but source deleted, no reader record and no retry'
+E       AssertionError: save failed but source deleted, no reader record and no retry
+E       assert False
+E        +  where False = exists()
+E        +    where exists = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/acceptance-20261030/pytest-workspace-final/test_save_failure_keeps_source0/queue/uploads/x.wav').exists
+
+test_workspace_acceptance.py:80: AssertionError</failure></testcase><testcase classname="test_workspace_acceptance" name="test_viewing_older_version_does_not_make_it_latest" time="0.059"><failure message="AssertionError: viewing version 1 displaced version 2&#10;assert '447836546ab6' == '3ab8af5531e4'&#10;  &#10;  - 3ab8af5531e4&#10;  + 447836546ab6">tmp_path = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/acceptance-20261030/pytest-workspace-final/test_viewing_older_version_doe0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002AE2B278DD0&gt;
+
+    def test_viewing_older_version_does_not_make_it_latest(tmp_path,monkeypatch):
+        import backend.history as mod
+        import time
+        monkeypatch.setattr(mod,'_now_iso',lambda:'2026-10-30T00:00:00+00:00')
+        h=HistoryStore(tmp_path/'history')
+        a=save(h,task_id='111111111111',batch_id='aabbccddeeff')
+        b=save(h,task_id='111111111111',batch_id='aabbccddeeff')
+        time.sleep(.05)
+        h.update_view(a['id'],1)
+&gt;       assert h.batches()[0]['items'][0]['history_id']==b['id'], 'viewing version 1 displaced version 2'
+E       AssertionError: viewing version 1 displaced version 2
+E       assert '447836546ab6' == '3ab8af5531e4'
+E
+E         - 3ab8af5531e4
+E         + 447836546ab6
+
+test_workspace_acceptance.py:91: AssertionError</failure></testcase></testsuite></testsuites>

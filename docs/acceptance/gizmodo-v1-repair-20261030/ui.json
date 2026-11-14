@@ -1,0 +1,301 @@
+{
+  "phase": "ui",
+  "generated_at": "2026-10-30T08:05:00Z",
+  "viewports": {
+    "desktop": "1280x820",
+    "mobile": "390x844 @DPR3 mobile+touch",
+    "short": "1280x420",
+    "narrow": "1099px and below"
+  },
+  "checks": [
+    {
+      "name": "local display font applied, zero external requests",
+      "pass": true,
+      "details": {
+        "fontFamily": "\"Special Gothic Expanded One\", Arial, sans-serif",
+        "externalRequests": 0
+      }
+    },
+    {
+      "name": "A01 two same-named same-sized Files retained",
+      "pass": true,
+      "details": {
+        "files": 2,
+        "sameName": true,
+        "sameSize": true,
+        "differentContent": true,
+        "summary": "发现 2 项 · 已选 2 项 · 排除 0 项",
+        "before": 1
+      }
+    },
+    {
+      "name": "A01 unknown source directory disclosed, not fabricated",
+      "pass": true,
+      "details": {
+        "pathLabel": "同名文件.wav（来源目录未提供）"
+      }
+    },
+    {
+      "name": "A01 partial accept reconciles by client id",
+      "pass": true,
+      "details": {
+        "before": 2,
+        "after": 413,
+        "remaining": 1,
+        "dialogStillOpen": true
+      }
+    },
+    {
+      "name": "A02 title search opens the full transcript",
+      "pass": true,
+      "details": {
+        "query": "历史验收记录-000",
+        "cards": 1,
+        "readerFindValue": "",
+        "visibleBodyBlocks": 1,
+        "before": {
+          "lines": 0
+        }
+      }
+    },
+    {
+      "name": "A02 zero-match offers a clear way out",
+      "pass": true,
+      "details": {
+        "text": "本份查询没有匹配结果…清除关键词与筛选",
+        "keepsConditions": true
+      }
+    },
+    {
+      "name": "A03 72 loaded, open/return three times",
+      "pass": true,
+      "details": {
+        "trips": [
+          {
+            "before": 72,
+            "after": 72,
+            "unique": 72
+          },
+          {
+            "before": 72,
+            "after": 72,
+            "unique": 72
+          },
+          {
+            "before": 72,
+            "after": 72,
+            "unique": 72
+          }
+        ],
+        "before": {
+          "afterReturn": 108,
+          "unique": 72
+        }
+      }
+    },
+    {
+      "name": "A07 mobile search entry next to the nav",
+      "pass": true,
+      "details": {
+        "viewport": "390x844",
+        "toggleDisplay": "flex",
+        "searchTopPx": 158,
+        "batchButtonsVisible": 2,
+        "before": {
+          "searchTopPx": 8325,
+          "batchTopPx": 8762
+        }
+      }
+    },
+    {
+      "name": "A07 mobile has no horizontal overflow",
+      "pass": true,
+      "details": {
+        "viewport": "390x844"
+      }
+    },
+    {
+      "name": "A07 reading position saved and restored",
+      "pass": true,
+      "details": {
+        "scrolledTo": 2433,
+        "maxScroll": 3041,
+        "targetRatio": 0.8,
+        "savedReaderPosition": {
+          "segment_index": 24,
+          "within_block_ratio": 0,
+          "scroll_ratio": 0.7007563301545544
+        },
+        "playbackPositionUntouched": 7,
+        "restoredScrollTop": 2433,
+        "restoredRatio": 0.8
+      }
+    },
+    {
+      "name": "A09 task status font >= 13px",
+      "pass": true,
+      "details": {
+        "statusFont": "13px",
+        "before": "11px"
+      }
+    },
+    {
+      "name": "A09 auxiliary font >= 12px",
+      "pass": true,
+      "details": {
+        "metaFont": "12px",
+        "before": "10px (mobile 9px)"
+      }
+    },
+    {
+      "name": "A09 mobile task actions ~44px",
+      "pass": true,
+      "details": {
+        "heights": {
+          "查看结果": 44,
+          "重新处理": 44,
+          "查看缺失": 44
+        },
+        "before": 28
+      }
+    },
+    {
+      "name": "A09 reading body 18px / 1.9",
+      "pass": true,
+      "details": {
+        "fontSize": "18px",
+        "lineHeight": "34.2px",
+        "before": "17px desktop / 15px mobile"
+      }
+    },
+    {
+      "name": "A09 task masthead 68px in task mode",
+      "pass": true,
+      "details": {
+        "height": 68,
+        "before": 88
+      }
+    },
+    {
+      "name": "A09 short window scrolls the whole page",
+      "pass": true,
+      "details": {
+        "viewport": "1280x420",
+        "mainOverflow": "visible",
+        "mainMaxHeight": "none",
+        "taskScrollOverflow": "visible",
+        "pageScrollY": 313,
+        "actionReachableWithoutNestedScroll": true,
+        "before": {
+          "tableTop": 419,
+          "windowHeight": 420
+        }
+      }
+    },
+    {
+      "name": "A10 list style preference persisted",
+      "pass": true,
+      "details": {
+        "stored": {
+          "listStyle": "compact"
+        },
+        "labelAfter": "切换两列版面"
+      }
+    },
+    {
+      "name": "A10 reader view preference persisted",
+      "pass": true,
+      "details": {
+        "stored": {
+          "readerView": "subtitle"
+        }
+      }
+    },
+    {
+      "name": "A10 alignment preference survives closing the dialog",
+      "pass": true,
+      "details": {
+        "setInDialog": true,
+        "valueOnReopen": true,
+        "before": false
+      }
+    },
+    {
+      "name": "A10 paragraph/subtitle toggle keeps original segments",
+      "pass": true,
+      "details": {
+        "paragraphBlocks": 2,
+        "subtitleLines": 2,
+        "segmentsUnchanged": true
+      }
+    },
+    {
+      "name": "A10 task detail opens for a resultless file",
+      "pass": true,
+      "details": {
+        "rows": [
+          "完整文件名 real-live.wav",
+          "来源 验收材料/real-live.wav",
+          "导入时间 2026年10月30日",
+          "时长 待检测",
+          "处理配置 未请求对齐",
+          "当前阶段 处理失败",
+          "原因 empty_result"
+        ]
+      }
+    },
+    {
+      "name": "A04 save-failed task shows readable actions",
+      "pass": true,
+      "details": {
+        "status": "结果未保存",
+        "note": "转写已完成，本次会话可读，长期记录保存失败",
+        "actions": [
+          "查看未保存",
+          "重新保存",
+          "详情"
+        ],
+        "counts": "12 完整 … 1 未保存"
+      }
+    },
+    {
+      "name": "A04 temporary reader warns and hides delete",
+      "pass": true,
+      "details": {
+        "banner": "这份结果尚未保存",
+        "deleteHidden": true,
+        "bodyChars": 98,
+        "rtf": 0.11,
+        "model": "Qwen3-ASR-1.7B-Q8_0"
+      }
+    },
+    {
+      "name": "A04 save retry recovers the record",
+      "pass": true,
+      "details": {
+        "toast": "fault-inject.wav 已保存到长期记录。",
+        "afterStatus": "已完成",
+        "afterActions": [
+          "查看结果"
+        ],
+        "libraryTotalForRecord": 1,
+        "resultVersion": 1
+      }
+    },
+    {
+      "name": "A11 no-segment result is not described as timed",
+      "pass": true,
+      "details": {
+        "notice": "没有分段定位时间戳 / 本次未请求对齐，没有分段时间戳。",
+        "tail": "本次未请求对齐，没有分段时间戳。 文字与音轨缓存分开保存。"
+      }
+    },
+    {
+      "name": "view sort does not change execution order",
+      "pass": true,
+      "details": {
+        "note": "排序只作用于 taskRows；后端等待队列顺序不变"
+      }
+    }
+  ]
+}

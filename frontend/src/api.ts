@@ -5,22 +5,35 @@
 
 import type {
   AlignResponse,
+  AppLimits,
   ApiError,
   AudioCacheClearResult,
   AudioCacheInfo,
+  BatchesResponse,
   HealthResponse,
   HistoryItem,
   HistoryRecord,
+  HistorySearchResponse,
   JobStatusResponse,
   ModelsResponse,
   QueueItem,
+  QueueItemResult,
   QueueSortKey,
   QueueStateResponse,
   ReadinessResponse,
+  ReaderPosition,
   SwitchModelRequest,
   SwitchModelResponse,
   TranscribeResponse,
 } from "./types";
+
+/** PATCH /api/history/{hid}/view response. */
+export interface HistoryViewResponse {
+  first_viewed_at: string;
+  read_position: number;
+  playback_position: number;
+  reader_position?: ReaderPosition | null;
+}
 
 async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -31,8 +44,17 @@ export function fetchHealth(): Promise<HealthResponse> {
   return getJson<HealthResponse>("/api/health");
 }
 
+export function fetchLimits(): Promise<AppLimits> {
+  return getJson<AppLimits>("/api/limits");
+}
+
 export function fetchReadiness(): Promise<ReadinessResponse> {
   return getJson<ReadinessResponse>("/api/readiness");
+}
+
+export async function shutdownApp(): Promise<void> {
+  const response = await fetch("/api/shutdown", { method: "POST" });
+  if (!response.ok) throw new Error("无法退出本地服务，请稍后重试。");
 }
 
 /** POST /api/readiness/retry — re-run the boot sequence after phase="error".
@@ -82,6 +104,45 @@ export async function alignStandalone(
 
 export function fetchHistory(): Promise<{ items: HistoryItem[] }> {
   return getJson<{ items: HistoryItem[] }>("/api/history");
+}
+
+export function fetchHistorySearch(options: {
+  query?: string;
+  offset?: number;
+  limit?: number;
+  batchId?: string | null;
+  filter?: "all" | "unseen" | "partial";
+} = {}): Promise<HistorySearchResponse> {
+  const params = new URLSearchParams();
+  if (options.query) params.set("q", options.query);
+  if (options.offset) params.set("offset", String(options.offset));
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.batchId) params.set("batch_id", options.batchId);
+  if (options.filter) params.set("filter", options.filter);
+  return getJson<HistorySearchResponse>(`/api/history/search?${params.toString()}`);
+}
+
+export function fetchBatches(): Promise<BatchesResponse> {
+  return getJson<BatchesResponse>("/api/batches");
+}
+
+/** PATCH /api/history/{hid}/view. `position` is the legacy seconds field
+ * (playback); reader/playback anchors are independent and never overwrite
+ * each other.  `keepalive` lets the pagehide flush finish after unload;
+ * sendBeacon cannot send PATCH, so this is the correct last-chance path. */
+export async function updateHistoryView(
+  hid: string,
+  position?: number,
+  extra: { reader_position?: ReaderPosition; playback_position?: number } = {},
+  options: { keepalive?: boolean } = {},
+): Promise<HistoryViewResponse | ApiError> {
+  const res = await fetch(`/api/history/${encodeURIComponent(hid)}/view`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ position, ...extra }),
+    keepalive: Boolean(options.keepalive),
+  });
+  return (await res.json()) as HistoryViewResponse | ApiError;
 }
 
 export function fetchHistoryRecord(
@@ -135,16 +196,54 @@ export function fetchQueue(): Promise<QueueStateResponse> {
   return getJson<QueueStateResponse>("/api/queue");
 }
 
-/** POST /api/queue/items — enqueue a batch of files for serial transcription. */
+/** POST /api/queue/items — enqueue a batch of files for serial transcription.
+ *  `clientImportIds` are caller-minted ids echoed back per item so a partial
+ *  accept can be reconciled exactly, never by guessing from name/size. */
 export async function enqueueFiles(
   files: File[],
   align: boolean,
+  batch: {
+    id: string;
+    name: string;
+    sourcePaths: string[];
+    clientImportIds?: string[];
+  } = {
+    id: crypto.randomUUID().replace(/-/g, "").slice(0, 12),
+    name: "未命名批次",
+    sourcePaths: files.map((file) => file.name),
+  },
 ): Promise<{ items: QueueItem[] } | ApiError> {
   const form = new FormData();
   for (const f of files) form.append("files", f);
   form.append("align", String(align));
+  form.append("batch_id", batch.id);
+  form.append("batch_name", batch.name);
+  form.append("source_paths", JSON.stringify(batch.sourcePaths));
+  if (batch.clientImportIds && batch.clientImportIds.length === files.length) {
+    form.append("client_import_ids", JSON.stringify(batch.clientImportIds));
+  }
   const res = await fetch("/api/queue/items", { method: "POST", body: form });
   return (await res.json()) as { items: QueueItem[] } | ApiError;
+}
+
+/** GET /api/queue/items/{id}/result — read one item's result (saved or the
+ *  session-only recovery copy) without polling the whole queue. */
+export function fetchQueueItemResult(id: string): Promise<QueueItemResult | ApiError> {
+  return getJson<QueueItemResult | ApiError>(`/api/queue/items/${encodeURIComponent(id)}/result`);
+}
+
+/** POST /api/queue/items/{id}/save — re-commit an already-produced result.
+ *  Never re-runs ASR; repeats return the same history id. */
+export async function retryQueueSave(
+  id: string,
+  attemptId: string,
+): Promise<{ ok: boolean; history_id: string; already_saved: boolean } | ApiError> {
+  const res = await fetch(`/api/queue/items/${encodeURIComponent(id)}/save`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ attempt_id: attemptId }),
+  });
+  return (await res.json()) as { ok: boolean; history_id: string; already_saved: boolean } | ApiError;
 }
 
 /** POST /api/queue/reorder — ids must be a permutation of the queued items. */

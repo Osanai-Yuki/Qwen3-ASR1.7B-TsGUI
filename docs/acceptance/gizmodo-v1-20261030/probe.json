@@ -1,0 +1,344 @@
+{
+  "phase": "probe",
+  "generated_at": "2026-10-30T04:22:17.748Z",
+  "checks": [
+    {
+      "name": "/api/readiness",
+      "pass": true,
+      "details": {
+        "phase": "ready",
+        "asr_loaded": true,
+        "asr_warmup": true,
+        "aligner_loaded": true,
+        "aligner_warmup": true,
+        "ready": true,
+        "error": null,
+        "current_model": "Qwen3-ASR-1.7B-Q8_0",
+        "switching": false,
+        "ffmpeg_ok": true
+      }
+    },
+    {
+      "name": "/api/health",
+      "pass": true,
+      "details": {
+        "backend": true,
+        "llama_server": true,
+        "current_model": "Qwen3-ASR-1.7B-Q8_0",
+        "aligner_available": true,
+        "aligner_status": "gpu:qwen-asr",
+        "aligner_backend": "gpu"
+      }
+    },
+    {
+      "name": "/api/limits",
+      "pass": true,
+      "details": {
+        "max_upload_bytes": 2147483648,
+        "max_audio_duration_seconds": 43200,
+        "queue_max_entries": 500,
+        "queue_pending_entries": 2,
+        "queue_max_bytes": 17179869184,
+        "queue_staged_bytes": 1812240
+      }
+    },
+    {
+      "name": "/api/history/search?limit=2",
+      "pass": true,
+      "details": {
+        "total": 212,
+        "count": 2
+      }
+    },
+    {
+      "name": "/api/batches",
+      "pass": true,
+      "details": {
+        "batches": [
+          {
+            "id": "112233445566",
+            "count": 3
+          },
+          {
+            "id": "aabbccddeeff",
+            "count": 7
+          },
+          {
+            "id": "legacy-history",
+            "count": 205
+          }
+        ]
+      }
+    },
+    {
+      "name": "1280 library layout",
+      "pass": true,
+      "details": {
+        "width": 1280,
+        "height": 820,
+        "scrollWidth": 1265,
+        "font": "\"Microsoft YaHei\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Segoe UI\", sans-serif",
+        "loaded": true,
+        "mainHeight": 606,
+        "overflows": [],
+        "textSizes": [],
+        "navHeight": 88
+      }
+    },
+    {
+      "name": "1280 tasks layout",
+      "pass": true,
+      "details": {
+        "width": 1280,
+        "height": 820,
+        "scrollWidth": 1265,
+        "font": "\"Microsoft YaHei\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Segoe UI\", sans-serif",
+        "loaded": true,
+        "mainHeight": 491,
+        "overflows": [],
+        "textSizes": [
+          {
+            "class": "asr-file-title",
+            "size": "13px"
+          },
+          {
+            "class": "asr-file-meta",
+            "size": "10px"
+          },
+          {
+            "class": "asr-status-label done",
+            "size": "11px"
+          },
+          {
+            "class": "",
+            "size": "10px"
+          },
+          {
+            "class": "asr-file-title",
+            "size": "13px"
+          },
+          {
+            "class": "asr-file-meta",
+            "size": "10px"
+          },
+          {
+            "class": "asr-status-label done",
+            "size": "11px"
+          },
+          {
+            "class": "",
+            "size": "10px"
+          },
+          {
+            "class": "asr-file-title",
+            "size": "13px"
+          },
+          {
+            "class": "asr-file-meta",
+            "size": "10px"
+          },
+          {
+            "class": "asr-status-label done",
+            "size": "11px"
+          },
+          {
+            "class": "",
+            "size": "10px"
+          }
+        ],
+        "navHeight": 88
+      }
+    },
+    {
+      "name": "1280 reader layout",
+      "pass": true,
+      "details": {
+        "width": 1280,
+        "height": 820,
+        "scrollWidth": 1265,
+        "font": "\"Microsoft YaHei\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Segoe UI\", sans-serif",
+        "loaded": true,
+        "mainHeight": 606,
+        "overflows": [],
+        "textSizes": [
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          },
+          {
+            "class": "",
+            "size": "17px"
+          }
+        ],
+        "navHeight": 88
+      }
+    },
+    {
+      "name": "960 horizontal overflow",
+      "pass": true,
+      "details": {
+        "width": 960,
+        "height": 820,
+        "scrollWidth": 945,
+        "font": "\"Microsoft YaHei\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Segoe UI\", sans-serif",
+        "loaded": true,
+        "mainHeight": 606,
+        "overflows": [],
+        "textSizes": [],
+        "navHeight": 88
+      }
+    },
+    {
+      "name": "640 horizontal overflow",
+      "pass": true,
+      "details": {
+        "width": 640,
+        "height": 820,
+        "scrollWidth": 625,
+        "font": "\"Microsoft YaHei\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Segoe UI\", sans-serif",
+        "loaded": true,
+        "mainHeight": 8028,
+        "overflows": [],
+        "textSizes": [],
+        "navHeight": 76
+      }
+    },
+    {
+      "name": "390 horizontal overflow",
+      "pass": true,
+      "details": {
+        "width": 390,
+        "height": 844,
+        "scrollWidth": 375,
+        "font": "\"Microsoft YaHei\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Segoe UI\", sans-serif",
+        "loaded": true,
+        "mainHeight": 8124,
+        "overflows": [],
+        "textSizes": [],
+        "navHeight": 76
+      }
+    },
+    {
+      "name": "mobile reader layout",
+      "pass": true,
+      "details": {
+        "width": 390,
+        "height": 844,
+        "scrollWidth": 375,
+        "font": "\"Microsoft YaHei\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Segoe UI\", sans-serif",
+        "loaded": true,
+        "mainHeight": 1568,
+        "overflows": [],
+        "textSizes": [
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          },
+          {
+            "class": "",
+            "size": "15px"
+          }
+        ],
+        "navHeight": 76
+      }
+    },
+    {
+      "name": "import dialog",
+      "pass": true,
+      "details": {
+        "focus": "<button class=\"asr-modal-close\" aria-label=\"关闭\">×</button>",
+        "inert": true
+      }
+    },
+    {
+      "name": "no application JS exceptions",
+      "pass": true,
+      "details": []
+    },
+    {
+      "name": "no external page dependencies",
+      "pass": true,
+      "details": []
+    }
+  ]
+}

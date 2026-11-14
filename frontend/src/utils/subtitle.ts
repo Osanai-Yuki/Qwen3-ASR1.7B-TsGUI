@@ -107,28 +107,62 @@ export const SUBTITLE_FORMATS: {
   { id: "json", label: "JSON", ext: "json", mime: "application/json" },
 ];
 
-/** Build the export string for a given format. */
-function withFallbackCue(
-  segments: Segment[],
-  text: string,
-  stats: Stats | null,
-): Segment[] {
-  // The backend falls back to the bare text field when a chunk yields no usable
-  // segment timestamps. Exporting an empty cue list would then hand back a file
-  // with nothing in it while the UI still shows the transcript.
-  if (segments.length > 0 || !text.trim()) return segments;
-  const duration = stats?.audio_duration;
-  const end = typeof duration === "number" && isFinite(duration) ? duration : 0;
-  return [{ start: 0, end: Math.max(end, 0), text: text.trim() }];
+/** What the exporter actually produced, so the manifest can describe it
+ *  honestly instead of implying per-sentence timing that does not exist. */
+export interface SubtitleCues {
+  cues: Segment[];
+  /** True when a single whole-pass cue was synthesised from the plain text. */
+  coarse: boolean;
+  /** False when the audio duration is unknown, so no valid range exists. */
+  durationKnown: boolean;
 }
 
+/**
+ * Resolve the cue list for export.
+ *
+ * The backend falls back to the bare text field when a chunk yields no usable
+ * segment timestamps.  Exporting an empty cue list would hand back a file with
+ * nothing in it while the UI still shows the transcript, so a single
+ * whole-pass cue is synthesised — but only when the duration is genuinely
+ * known.  With an unknown duration there is no honest time range, and emitting
+ * `00:00:00 --> 00:00:00` would look like real timing that was never there.
+ */
+export function subtitleCues(
+  text: string,
+  segments: Segment[],
+  stats: Stats | null,
+): SubtitleCues {
+  if (segments.length > 0) return { cues: segments, coarse: false, durationKnown: true };
+  if (!text.trim()) return { cues: [], coarse: false, durationKnown: false };
+  const duration = stats?.audio_duration;
+  const known = typeof duration === "number" && isFinite(duration) && duration > 0;
+  if (!known) return { cues: [], coarse: true, durationKnown: false };
+  return { cues: [{ start: 0, end: duration, text: text.trim() }], coarse: true, durationKnown: true };
+}
+
+const TIMED_FORMATS: SubtitleFormat[] = ["srt", "vtt", "ass"];
+
+/**
+ * Build the export string for a given format.
+ *
+ * A timed format with no usable segments and an unknown duration returns an
+ * explicit notice plus the full text rather than a fabricated all-zero cue.
+ */
 export function buildSubtitle(
   format: SubtitleFormat,
   text: string,
   segments: Segment[],
   stats: Stats | null,
 ): string {
-  const cues = withFallbackCue(segments, text, stats);
+  const { cues, coarse, durationKnown } = subtitleCues(text, segments, stats);
+  if (TIMED_FORMATS.includes(format) && coarse && !durationKnown) {
+    return [
+      "没有生成有效时间范围：本次转写没有分段定位时间戳，音频时长也未知。",
+      "以下为完整转写文字；需要时间轴时请使用 TXT 或 JSON 格式。",
+      "",
+      text.trim(),
+    ].join("\n");
+  }
   switch (format) {
     case "srt":
       return toSRT(cues);

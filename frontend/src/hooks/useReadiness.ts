@@ -65,25 +65,25 @@ export function useReadiness() {
 
 /** Map a readiness phase to a readable label for the boot overlay. */
 export function phaseLabel(phase: string, error: string | null): string {
-  if (error) return `Error: ${error}`;
+  if (error) return `启动出错：${error}`;
   switch (phase) {
     case "starting":
-      return "Initializing…";
+      return "正在初始化本地服务…";
     case "asr_loading":
-      return "Loading ASR model (GPU)…";
+      return "正在加载识别模型（GPU）…";
     case "asr_warmup":
-      return "Warming up ASR model…";
+      return "正在预热识别模型…";
     case "asr_skipped":
-      return "ASR skipped (dev mode)…";
+      return "开发模式：跳过识别模型…";
     case "aligner_check":
-      return "Checking forced aligner…";
+      return "正在检查强制对齐器…";
     case "aligner_loading":
-      return "Loading forced aligner…";
+      return "正在加载强制对齐器…";
     case "asr_switching":
-      return "Switching model…";
+      return "正在切换模型…";
     case "ready":
-      return "Ready";
+      return "已就绪";
     default:
-      return phase ? `${phase}…` : "Starting…";
+      return phase ? `${phase}…` : "正在启动…";
   }
 }

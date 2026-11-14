@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="6" skipped="0" tests="6" time="0.931" timestamp="2026-10-31T00:25:36.942906+08:00" hostname="DESKTOP-V1HJCBB"><testcase classname="test_independent_review" name="test_cancelled_result_still_reprocessable_after_save_retry" time="0.038"><failure message="AssertionError: {'source_exists': False, 'retry_status': 410, 'body': {'error': 'gone', 'detail': 'staged file no longer exists; re-enqueue it'}}&#10;assert (False)&#10; +  where False = exists()&#10; +    where exists = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/repair-review-20261031/independent-tmp/test_cancelled_result_still_re0/queue/uploads/sample.wav').exists">tmp_path = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/repair-review-20261031/independent-tmp/test_cancelled_result_still_re0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001CFB41AC8F0&gt;
+
+    def test_cancelled_result_still_reprocessable_after_save_retry(tmp_path, monkeypatch):
+        client, store, item, staged = setup_failed(tmp_path, monkeypatch, cancelled=True)
+        attempt = store.get(item["id"])["attempt_id"]
+        r = client.post(f"/api/queue/items/{item['id']}/save", json={"attempt_id": attempt})
+        assert r.status_code == 200, r.text
+        rerun = client.post(f"/api/queue/items/{item['id']}/retry")
+&gt;       assert staged.exists() and rerun.status_code == 200, {
+            "source_exists": staged.exists(), "retry_status": rerun.status_code, "body": rerun.json()
+        }
+E       AssertionError: {'source_exists': False, 'retry_status': 410, 'body': {'error': 'gone', 'detail': 'staged file no longer exists; re-enqueue it'}}
+E       assert (False)
+E        +  where False = exists()
+E        +    where exists = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/repair-review-20261031/independent-tmp/test_cancelled_result_still_re0/queue/uploads/sample.wav').exists
+
+test_independent_review.py:33: AssertionError</failure></testcase><testcase classname="test_independent_review" name="test_pending_directory_failure_keeps_readable_session_copy" time="0.018"><failure message="AssertionError: {'flags': {'id': '16d81fb23bd3', 'filename': 'sample.wav', 'title': 'sample', 'batch_id': None, ...}, 'read_status': 4..._body': {'error': 'unavailable', 'detail': 'no readable result for this attempt; the temporary text was not retained'}}&#10;assert (409 == 200)&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">tmp_path = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/repair-review-20261031/independent-tmp/test_pending_directory_failure0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001CFB41BFEF0&gt;
+
+    def test_pending_directory_failure_keeps_readable_session_copy(tmp_path, monkeypatch):
+        client, store, item, staged = setup_failed(tmp_path, monkeypatch, run=False)
+        def unavailable():
+            raise OSError("pending directory cannot be created")
+        with monkeypatch.context() as m:
+            m.setattr(qapi, "pending", unavailable)
+            assert asyncio.run(qapi.process_next_once()) is True
+        row = store.get(item["id"])
+        r = client.get(f"/api/queue/items/{item['id']}/result")
+&gt;       assert r.status_code == 200 and r.json()["result"]["text"], {
+            "flags": row, "read_status": r.status_code, "read_body": r.json()
+        }
+E       AssertionError: {'flags': {'id': '16d81fb23bd3', 'filename': 'sample.wav', 'title': 'sample', 'batch_id': None, ...}, 'read_status': 4..._body': {'error': 'unavailable', 'detail': 'no readable result for this attempt; the temporary text was not retained'}}
+E       assert (409 == 200)
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+test_independent_review.py:46: AssertionError</failure></testcase><testcase classname="test_independent_review" name="test_save_retry_blocks_reprocessing_until_claim_is_resolved" time="0.031"><failure message="AssertionError: {'rerun_status': 200, 'save_status': 200, 'final_queue': {'id': 'b16a7f81ed9a', 'filename': 'sample.wav', 'title': 'sample', 'batch_id': None, ...}, 'source_exists': False}&#10;assert 200 == 409&#10; +  where 200 = &lt;Response [200 OK]&gt;.status_code">tmp_path = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/repair-review-20261031/independent-tmp/test_save_retry_blocks_reproce0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001CFB422E4E0&gt;
+
+    def test_save_retry_blocks_reprocessing_until_claim_is_resolved(tmp_path, monkeypatch):
+        client, store, item, staged = setup_failed(tmp_path, monkeypatch)
+        attempt = store.get(item["id"])["attempt_id"]
+        entered, release = threading.Event(), threading.Event()
+        def slow_save(payload):
+            entered.set()
+            assert release.wait(5)
+            return main_mod._save_result_payload(payload)
+        monkeypatch.setitem(qapi._deps, "save_result_fn", slow_save)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(client.post, f"/api/queue/items/{item['id']}/save",
+                                 json={"attempt_id": attempt})
+            assert entered.wait(5)
+            rerun = client.post(f"/api/queue/items/{item['id']}/retry")
+            release.set()
+            saved = future.result(timeout=5)
+&gt;       assert rerun.status_code == 409, {
+            "rerun_status": rerun.status_code, "save_status": saved.status_code,
+            "final_queue": store.get(item["id"]), "source_exists": staged.exists()
+        }
+E       AssertionError: {'rerun_status': 200, 'save_status': 200, 'final_queue': {'id': 'b16a7f81ed9a', 'filename': 'sample.wav', 'title': 'sample', 'batch_id': None, ...}, 'source_exists': False}
+E       assert 200 == 409
+E        +  where 200 = &lt;Response [200 OK]&gt;.status_code
+
+test_independent_review.py:66: AssertionError</failure></testcase><testcase classname="test_independent_review" name="test_cancelled_queue_write_failure_keeps_partial_payload" time="0.016"><failure message="AssertionError: {'read_status': 409, 'flags': {'id': '48b5d4c7b299', 'filename': 'sample.wav', 'title': 'sample', 'batch_id': None, ...}}&#10;assert (409 == 200)&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">tmp_path = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/repair-review-20261031/independent-tmp/test_cancelled_queue_write_fai0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001CFB421E630&gt;
+
+    def test_cancelled_queue_write_failure_keeps_partial_payload(tmp_path, monkeypatch):
+        client, store, item, staged = setup_failed(tmp_path, monkeypatch, cancelled=True, run=False)
+        original = store._save_locked
+        def fail_cancel_status():
+            if store._state["items"][0]["status"] == "cancelled":
+                raise OSError("queue disk write failed")
+            return original()
+        with monkeypatch.context() as m:
+            m.setattr(store, "_save_locked", fail_cancel_status)
+            try:
+                asyncio.run(qapi.process_next_once())
+            except OSError:
+                pass
+        r = client.get(f"/api/queue/items/{item['id']}/result")
+&gt;       assert r.status_code == 200 and r.json()["result"]["text"], {
+            "read_status": r.status_code, "flags": store.get(item["id"])
+        }
+E       AssertionError: {'read_status': 409, 'flags': {'id': '48b5d4c7b299', 'filename': 'sample.wav', 'title': 'sample', 'batch_id': None, ...}}
+E       assert (409 == 200)
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+test_independent_review.py:85: AssertionError</failure></testcase><testcase classname="test_independent_review" name="test_pending_budget_exhaustion_pauses_following_work" time="0.014"><failure message="AssertionError: {'paused': False, 'memory_bytes': 491}&#10;assert False&#10; +  where False = is_paused()&#10; +    where is_paused = &lt;backend.queue_store.QueueStore object at 0x000001CFB4271400&gt;.is_paused">tmp_path = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/repair-review-20261031/independent-tmp/test_pending_budget_exhaustion0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001CFB425A750&gt;
+
+    def test_pending_budget_exhaustion_pauses_following_work(tmp_path, monkeypatch):
+        client, store, item, staged = setup_failed(tmp_path, monkeypatch, run=False)
+        p = PendingResultStore(tmp_path / "pending_results", max_total_bytes=1)
+        monkeypatch.setattr(qapi, "pending", lambda: p)
+        assert asyncio.run(qapi.process_next_once()) is True
+&gt;       assert store.is_paused(), {"paused": store.is_paused(), "memory_bytes": p.total_bytes()}
+E       AssertionError: {'paused': False, 'memory_bytes': 491}
+E       assert False
+E        +  where False = is_paused()
+E        +    where is_paused = &lt;backend.queue_store.QueueStore object at 0x000001CFB4271400&gt;.is_paused
+
+test_independent_review.py:94: AssertionError</failure></testcase><testcase classname="test_independent_review" name="test_failed_version_reservation_does_not_start_recognition" time="0.015"><failure message="AssertionError: {'calls': ['ASR'], 'queue': {'id': 'cd9b5a055e10', 'filename': 'sample.wav', 'title': 'sample', 'batch_id': None, ...}}&#10;assert ['ASR'] == []&#10;  &#10;  Left contains one more item: 'ASR'&#10;  Use -v to get more diff">tmp_path = WindowsPath('E:/Code_Projects/Python_Dev/Qwen3-ASR1.7B-TsGUI/build/repair-review-20261031/independent-tmp/test_failed_version_reservatio0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001CFB4273E90&gt;
+
+    def test_failed_version_reservation_does_not_start_recognition(tmp_path, monkeypatch):
+        client, store, item, staged = setup_failed(tmp_path, monkeypatch, run=False)
+        calls = []
+        async def recognize(**kwargs):
+            calls.append("ASR")
+            return {"history_id": None, "text": "text", "segments": [], "stats": {}}
+        def reserve(task):
+            raise OSError("version reservation disk full")
+        monkeypatch.setitem(qapi._deps, "transcribe_fn", recognize)
+        monkeypatch.setitem(qapi._deps, "reserve_version_fn", reserve)
+        asyncio.run(qapi.process_next_once())
+&gt;       assert calls == [], {"calls": calls, "queue": store.get(item["id"])}
+E       AssertionError: {'calls': ['ASR'], 'queue': {'id': 'cd9b5a055e10', 'filename': 'sample.wav', 'title': 'sample', 'batch_id': None, ...}}
+E       assert ['ASR'] == []
+E
+E         Left contains one more item: 'ASR'
+E         Use -v to get more diff
+
+test_independent_review.py:107: AssertionError</failure></testcase></testsuite></testsuites>

@@ -1,0 +1,112 @@
+{
+  "phase": "live",
+  "generated_at": "2026-10-30T04:24:54.034Z",
+  "checks": [
+    {
+      "name": "real ASR upload queue history pipeline",
+      "pass": true,
+      "details": {
+        "status": "done",
+        "history": "b72eacf8fc0f",
+        "text": "Welcome to the project acceptance meeting. Today we are checking the speech transcription system. The next meeting will begin at 9 o'clock tomorrow morning.",
+        "stats": {
+          "filename": "真实语音转写-B.wav",
+          "file_size": 453060,
+          "audio_duration": 10.272,
+          "chunk_count": 1,
+          "chunk_seconds": 25,
+          "asr_time": 1.531,
+          "align_time": 0,
+          "total_time": 1.828,
+          "rtf": 0.178,
+          "char_count": 156,
+          "segment_count": 0,
+          "word_count": 24,
+          "aligner_used": false,
+          "model": "Qwen3-ASR-1.7B-Q8_0",
+          "aligner_model": null,
+          "source_was_video": false,
+          "audio_cache_name": null,
+          "mp3_bitrate": null
+        }
+      }
+    },
+    {
+      "name": "B completion preserves A reader and audio",
+      "pass": true,
+      "details": {
+        "sameAudio": true,
+        "sameReader": true,
+        "query": "项目",
+        "time": 3,
+        "title": "音频播放隔离验收"
+      }
+    },
+    {
+      "name": "Library refreshes when a result completes",
+      "pass": false,
+      "details": {
+        "visibleBefore": "213 份可查看",
+        "visibleAfter": "213 份可查看",
+        "apiTotal": 214
+      }
+    },
+    {
+      "name": "return after load more preserves result list without duplication",
+      "pass": false,
+      "details": {
+        "before": 72,
+        "after": {
+          "count": 108,
+          "unique": 72
+        }
+      }
+    },
+    {
+      "name": "mobile page scroll persists reading position",
+      "pass": false,
+      "details": {
+        "windowScroll": 2500,
+        "savedPosition": 0
+      }
+    },
+    {
+      "name": "cooperative cancellation retains partial history",
+      "pass": true,
+      "details": {
+        "status": "cancelled",
+        "history": "696c5bd42cfd",
+        "cancelStatus": {
+          "status": "transcribing",
+          "progress": 10,
+          "message": "Transcribing chunk 1/4 (0.0s)...",
+          "result": null
+        }
+      }
+    },
+    {
+      "name": "pause leaves following task queued",
+      "pass": true,
+      "details": {
+        "following": "queued"
+      }
+    },
+    {
+      "name": "cancelled source can be retried",
+      "pass": true,
+      "details": {
+        "status": 200,
+        "data": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "real model run has no API failure",
+      "pass": true,
+      "details": {
+        "error": null
+      }
+    }
+  ]
+}

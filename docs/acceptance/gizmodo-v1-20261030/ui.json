@@ -1,0 +1,136 @@
+{
+  "phase": "ui",
+  "generated_at": "2026-10-30T04:24:36.949Z",
+  "checks": [
+    {
+      "name": "local display font applied",
+      "pass": true,
+      "details": "\"Special Gothic Expanded One\", Arial, sans-serif"
+    },
+    {
+      "name": "mobile search and batches immediately accessible",
+      "pass": false,
+      "details": {
+        "searchTop": 8325.015625,
+        "batchTop": 8761.578125,
+        "height": 844
+      }
+    },
+    {
+      "name": "modal background inert",
+      "pass": true
+    },
+    {
+      "name": "modal focus trap",
+      "pass": true,
+      "details": "<button class=\"asr-button\">取消</button>"
+    },
+    {
+      "name": "same basename and size from file picker retained separately",
+      "pass": false,
+      "details": {
+        "expected": 2,
+        "actual": 1
+      }
+    },
+    {
+      "name": "folder relative paths retained",
+      "pass": true
+    },
+    {
+      "name": "Escape closes dialog",
+      "pass": true
+    },
+    {
+      "name": "alignment preference retained",
+      "pass": false
+    },
+    {
+      "name": "find records older than 200",
+      "pass": true,
+      "details": "1 份可查看"
+    },
+    {
+      "name": "title search opens readable full transcript",
+      "pass": false,
+      "details": {
+        "heading": "历史验收记录-000",
+        "lines": 0,
+        "query": "历史验收记录-000"
+      }
+    },
+    {
+      "name": "body query highlights transcript hit",
+      "pass": true
+    },
+    {
+      "name": "back preserves global query",
+      "pass": true
+    },
+    {
+      "name": "no-match state offers clear filters",
+      "pass": false,
+      "details": "还没有转写结果\n\n导入音频或视频文件，结果会保存在这里，方便以后搜索和回听。\n\n新建转写"
+    },
+    {
+      "name": "missing media leaves text readable",
+      "pass": true
+    },
+    {
+      "name": "view sort does not change execution order",
+      "pass": true,
+      "details": {
+        "before": [
+          "666666666666",
+          "777777777777"
+        ],
+        "after": [
+          "666666666666",
+          "777777777777"
+        ]
+      }
+    },
+    {
+      "name": "task important state at least 13px",
+      "pass": false,
+      "details": {
+        "header": 88,
+        "scrollContainers": [
+          {
+            "class": "asr-main",
+            "height": 491,
+            "scroll": 491
+          },
+          {
+            "class": "asr-task-scroll",
+            "height": 186,
+            "scroll": 186
+          }
+        ],
+        "smallText": "11px"
+      }
+    },
+    {
+      "name": "partial results require explicit opt-in",
+      "pass": true,
+      "details": {
+        "count": "已选择 3 份，其中 2 份完整，1 份有缺失。",
+        "partial": false
+      }
+    },
+    {
+      "name": "ZIP downloads generated",
+      "pass": true,
+      "details": [
+        "transcripts_20261030.zip",
+        "10-export-default\\transcripts_20261030.zip",
+        "11-export-conflicts\\transcripts_20261030.zip"
+      ]
+    },
+    {
+      "name": "no unhandled JS exceptions",
+      "pass": true,
+      "details": []
+    }
+  ]
+}

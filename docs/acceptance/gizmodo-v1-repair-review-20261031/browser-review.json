@@ -1,0 +1,133 @@
+{
+  "generated_at": "2026-10-30T16:29:11.854Z",
+  "checks": [
+    {
+      "name": "real backend readiness",
+      "pass": true
+    },
+    {
+      "name": "A01 ordinary duplicate files retained",
+      "pass": true
+    },
+    {
+      "name": "A02 filename search opens full transcript",
+      "pass": true
+    },
+    {
+      "name": "A03 returns preserve 72 unique rows",
+      "pass": true,
+      "detail": 72
+    },
+    {
+      "name": "real ASR current repair pipeline",
+      "pass": true,
+      "detail": {
+        "status": "done",
+        "persistence": "saved",
+        "history_id": "903d74fbcf54",
+        "attempt_id": "5e2af33d2961",
+        "result_version": 1
+      }
+    },
+    {
+      "name": "reader and audio stable during real completion",
+      "pass": true
+    },
+    {
+      "name": "A07 desktop saves anchor",
+      "pass": true,
+      "detail": {
+        "segment_index": 15,
+        "within_block_ratio": 0,
+        "scroll_ratio": 0.2593286269989915
+      }
+    },
+    {
+      "name": "A07 breakpoint change preserves visible anchor",
+      "pass": false,
+      "detail": {
+        "saved": {
+          "segment_index": 15,
+          "within_block_ratio": 0,
+          "scroll_ratio": 0.2593286269989915
+        },
+        "actual": {
+          "visible": false,
+          "top": 2806.578125,
+          "bottom": 2936.140625,
+          "viewportTop": 0,
+          "viewportBottom": 844,
+          "windowY": 0,
+          "mainY": 0
+        }
+      }
+    },
+    {
+      "name": "A07 mobile search accessible without page scroll",
+      "pass": true,
+      "detail": {
+        "top": 169.5,
+        "overflow": false
+      }
+    },
+    {
+      "name": "A07 mobile scroll writes anchor",
+      "pass": true,
+      "detail": {
+        "anchor": {
+          "segment_index": 15,
+          "within_block_ratio": 0,
+          "scroll_ratio": 0.2593286269989915
+        },
+        "actualY": 2400
+      }
+    },
+    {
+      "name": "A07 mobile reopening shows saved anchor",
+      "pass": true,
+      "detail": {
+        "saved": {
+          "segment_index": 15,
+          "within_block_ratio": 0,
+          "scroll_ratio": 0.2593286269989915
+        },
+        "actual": {
+          "visible": true,
+          "top": 357.578125,
+          "bottom": 487.140625,
+          "viewportTop": 0,
+          "viewportBottom": 844,
+          "windowY": 2449,
+          "mainY": 0
+        }
+      }
+    },
+    {
+      "name": "A02 plain transcript search does not falsely say no match",
+      "pass": false,
+      "detail": {
+        "highlights": 80,
+        "notFound": "本份结果未找到匹配内容。全文仍可见，清除查找即可取消高亮。"
+      }
+    },
+    {
+      "name": "A02 paragraph search offers working hit navigation",
+      "pass": false,
+      "detail": {
+        "marks": [
+          {
+            "text": "第 72 段",
+            "top": 3355.703125
+          }
+        ],
+        "hasNext": false
+      }
+    },
+    {
+      "name": "no unhandled browser exceptions",
+      "pass": true,
+      "detail": []
+    }
+  ],
+  "verification_note": "The first mobile anchor check only verified a pre-existing nonzero value; mobile-review.json resets the anchor and proves whether the new scroll was actually persisted. Use the strict check for A07."
+}

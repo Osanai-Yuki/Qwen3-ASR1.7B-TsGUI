@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import json
 import os
@@ -20,7 +21,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form, Body
+from fastapi import FastAPI, UploadFile, File, Form, Body, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -38,7 +39,7 @@ from .audio_chunk import (
 )
 from .resegment import resegment_words
 from .text_clean import clean_asr_text, clean_segments, seam_overlap
-from .history import HistoryStore
+from .history import HistoryStore, derive_timing_info
 from . import queue_api
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -542,6 +543,32 @@ STATIC_DIR = PROJECT_ROOT / "frontend" / "dist"
 history_store = HistoryStore(HISTORY_DIR)
 
 
+def _save_result_payload(payload: dict) -> dict:
+    """Commit an already-produced result (the queue's save-retry endpoint).
+
+    Reuses the attempt/version the worker reserved before recognition, so a
+    retry never re-runs ASR and never takes a new result version.
+    """
+    stats = payload.get("stats") or {}
+    return history_store.save(
+        filename=payload.get("filename") or "unknown",
+        text=payload.get("text") or "",
+        segments=payload.get("segments") or [],
+        stats=stats,
+        align_used=bool(stats.get("aligner_used")),
+        audio_cache_name=stats.get("audio_cache_name"),
+        batch_id=payload.get("batch_id"),
+        batch_name=payload.get("batch_name"),
+        task_id=payload.get("task_id"),
+        source_path=payload.get("source_path"),
+        title=payload.get("title"),
+        alignment_requested=bool(payload.get("alignment_requested")),
+        result_version=payload.get("result_version"),
+        attempt_id=payload.get("attempt_id"),
+        timing=payload.get("timing"),
+    )
+
+
 def _cleanup_stale_tmp(max_age_minutes: int = 30) -> int:
     """Remove leftover ``asr_*`` and ``align_*`` temp directories older than threshold."""
     import time as _t
@@ -867,6 +894,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.post("/api/shutdown")
+async def request_shutdown(background_tasks: BackgroundTasks):
+    callback = getattr(app.state, "request_shutdown", None)
+    if callback is None:
+        return JSONResponse(status_code=503, content={"error": "shutdown_unavailable"})
+    background_tasks.add_task(callback)
+    return {"shutting_down": True}
+
 # The SPA is served same-origin by this app, so CORS is unnecessary. The
 # loopback-only guard (Host + Origin checks) replaces the previous wildcard
 # CORS policy, which let any website read transcripts/history, delete data,
@@ -898,6 +935,19 @@ async def health():
             else aligner.lib_status
         ),
         "aligner_backend": ALIGNER_BACKEND,
+    }
+
+
+@app.get("/api/limits")
+async def app_limits():
+    queue_store = queue_api.store
+    return {
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
+        "max_audio_duration_seconds": MAX_AUDIO_DURATION,
+        "queue_max_entries": queue_api.QUEUE_MAX_ENTRIES,
+        "queue_pending_entries": queue_store.pending_count() if queue_store else 0,
+        "queue_max_bytes": queue_api.QUEUE_MAX_BYTES,
+        "queue_staged_bytes": queue_store.staged_total_bytes() if queue_store else 0,
     }
 
 
@@ -1254,6 +1304,24 @@ async def transcribe(
     file: UploadFile = File(...),
     align: bool = Form(False),
 ):
+    task_meta: dict = {}
+    try:
+        encoded_meta = file.headers.get("x-asr-task-meta", "")
+        if encoded_meta:
+            padded = encoded_meta + "=" * (-len(encoded_meta) % 4)
+            decoded_meta = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+            if isinstance(decoded_meta, dict):
+                task_meta = decoded_meta
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        logger.warning("Ignoring invalid task metadata on upload")
+    if not re.fullmatch(r"[0-9a-f]{12}", str(task_meta.get("batch_id", ""))):
+        task_meta["batch_id"] = None
+    if not re.fullmatch(r"[0-9a-f]{12}", str(task_meta.get("task_id", ""))):
+        task_meta["task_id"] = None
+    task_meta["batch_name"] = str(task_meta.get("batch_name") or "")[:120] or None
+    task_meta["source_path"] = str(task_meta.get("source_path") or "")[:512] or None
+    task_meta["title"] = str(task_meta.get("title") or "")[:240] or None
+    alignment_requested = bool(task_meta.get("alignment_requested", align))
     t_total_start = time.monotonic()
 
     # Single-slot concurrency guard: only one heavy job at a time. Without
@@ -1615,6 +1683,14 @@ async def transcribe(
                         stats=stats,
                         align_used=False,
                         audio_cache_name=stats.get("audio_cache_name"),
+                        batch_id=task_meta.get("batch_id"),
+                        batch_name=task_meta.get("batch_name"),
+                        task_id=task_meta.get("task_id"),
+                        source_path=task_meta.get("source_path"),
+                        title=task_meta.get("title"),
+                        alignment_requested=alignment_requested,
+                        result_version=task_meta.get("result_version"),
+                        attempt_id=task_meta.get("attempt_id"),
                     )
                     history_id = record["id"]
                 except Exception as e:
@@ -1626,6 +1702,15 @@ async def transcribe(
                 "stats": stats,
                 "history_id": history_id,
                 "cancelled": True,
+                "timing": derive_timing_info(
+                    segments=all_segments,
+                    align_used=False,
+                    alignment_requested=alignment_requested,
+                    stats=stats,
+                ),
+                "alignment_requested": alignment_requested,
+                "attempt_id": task_meta.get("attempt_id"),
+                "result_version": task_meta.get("result_version"),
             }
 
         if not merged_text and not all_segments:
@@ -1718,6 +1803,14 @@ async def transcribe(
                 stats=stats,
                 align_used=stats.get("aligner_used", False),
                 audio_cache_name=stats.get("audio_cache_name"),
+                batch_id=task_meta.get("batch_id"),
+                batch_name=task_meta.get("batch_name"),
+                task_id=task_meta.get("task_id"),
+                source_path=task_meta.get("source_path"),
+                title=task_meta.get("title"),
+                alignment_requested=alignment_requested,
+                result_version=task_meta.get("result_version"),
+                attempt_id=task_meta.get("attempt_id"),
             )
             history_id = record["id"]
         except Exception as e:
@@ -1728,6 +1821,15 @@ async def transcribe(
             "segments": all_segments,
             "stats": stats,
             "history_id": history_id,
+            "timing": derive_timing_info(
+                segments=all_segments,
+                align_used=stats.get("aligner_used", False),
+                alignment_requested=alignment_requested,
+                stats=stats,
+            ),
+            "alignment_requested": alignment_requested,
+            "attempt_id": task_meta.get("attempt_id"),
+            "result_version": task_meta.get("result_version"),
         }
     finally:
         # Defensive: ensure the alignment pool is always released, even on
@@ -1809,6 +1911,95 @@ async def history_list():
     return {"items": items}
 
 
+@app.get("/api/batches")
+async def batch_list():
+    groups = await asyncio.to_thread(history_store.batches)
+    by_id = {group["id"]: group for group in groups}
+    queue = queue_api.store.snapshot() if queue_api.store is not None else {"items": []}
+    for queued in queue.get("items", []):
+        batch_id = queued.get("batch_id") or "legacy-queue"
+        group = by_id.get(batch_id)
+        if group is None:
+            group = {
+                "id": batch_id,
+                "name": queued.get("batch_name") or ("升级前队列" if batch_id == "legacy-queue" else "未命名批次"),
+                "created_at": queued.get("added_at"),
+                "items": [],
+            }
+            by_id[batch_id] = group
+            groups.append(group)
+        existing = next(
+            (item for item in group["items"] if item.get("id") == queued.get("id")),
+            None,
+        )
+        if existing is None:
+            group["items"].append({
+                "id": queued.get("id"),
+                "task_id": queued.get("id"),
+                "filename": queued.get("filename"),
+                "title": queued.get("title"),
+                "source_path": queued.get("source_path"),
+                "size": queued.get("size", 0),
+                "added_at": queued.get("added_at"),
+                "status": queued.get("status", "queued"),
+                "integrity": queued.get("integrity"),
+                "missing_ranges": queued.get("missing_ranges", []),
+                "alignment_fallback": queued.get("alignment_fallback", False),
+                "history_id": queued.get("history_id"),
+                "attempt_id": queued.get("attempt_id"),
+                "result_version": queued.get("result_version"),
+                "persistence_state": queued.get("persistence_state", "unavailable"),
+                "temporary_result_available": bool(queued.get("temporary_result_available")),
+                "can_retry_save": bool(queued.get("can_retry_save")),
+                "save_error": queued.get("save_error"),
+                "duration": 0,
+                "segment_count": 0,
+                "first_viewed_at": None,
+                "read_position": 0,
+                "error": queued.get("error"),
+            })
+        else:
+            existing["status"] = queued.get("status", existing["status"])
+            existing["history_id"] = queued.get("history_id")
+            existing["attempt_id"] = queued.get("attempt_id")
+            existing["result_version"] = queued.get("result_version")
+            existing["persistence_state"] = queued.get("persistence_state", "unavailable")
+            existing["temporary_result_available"] = bool(queued.get("temporary_result_available"))
+            existing["can_retry_save"] = bool(queued.get("can_retry_save"))
+            existing["save_error"] = queued.get("save_error")
+            existing["error"] = queued.get("error")
+            if queued.get("integrity"):
+                existing["integrity"] = queued["integrity"]
+                existing["missing_ranges"] = queued.get("missing_ranges", [])
+                existing["alignment_fallback"] = queued.get("alignment_fallback", False)
+    for group in groups:
+        counts: dict[str, int] = {}
+        for item in group["items"]:
+            counts[item.get("status", "queued")] = counts.get(item.get("status", "queued"), 0) + 1
+        group["counts"] = counts
+    groups.sort(key=lambda group: group.get("created_at") or "", reverse=True)
+    return {"batches": groups}
+
+
+@app.get("/api/history/search")
+async def history_search(
+    q: str = "",
+    offset: int = 0,
+    limit: int = 40,
+    batch_id: str | None = None,
+    filter: str = "all",
+):
+    result = await asyncio.to_thread(
+        history_store.search,
+        query=q[:500],
+        offset=max(0, offset),
+        limit=max(1, min(100, limit)),
+        batch_id=batch_id,
+        filter_by=filter if filter in {"all", "unseen", "partial"} else "all",
+    )
+    return result
+
+
 @app.get("/api/history/{hid}")
 async def history_get(hid: str):
     rec = history_store.get(hid)
@@ -1817,15 +2008,57 @@ async def history_get(hid: str):
     return rec
 
 
+@app.patch("/api/history/{hid}/view")
+async def history_update_view(hid: str, req: dict = Body(default={})):
+    """Persist viewing state.
+
+    ``position`` is the legacy playback-seconds field and is optional: when it
+    is absent the playback position must be left alone rather than reset to 0.
+    ``reader_position`` (transcript anchor) and ``playback_position`` are
+    independent of each other and of the legacy field.
+    """
+    raw_position = req.get("position")
+    position: float | None = None
+    if raw_position is not None:
+        try:
+            position = float(raw_position)
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "bad_request", "detail": "position must be numeric"}, status_code=422)
+    raw_playback = req.get("playback_position")
+    playback_position: float | None = None
+    if raw_playback is not None:
+        try:
+            playback_position = float(raw_playback)
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "bad_request", "detail": "playback_position must be numeric"}, status_code=422)
+    reader_position = req.get("reader_position")
+    if reader_position is not None and not isinstance(reader_position, dict):
+        return JSONResponse({"error": "bad_request", "detail": "reader_position must be an object"}, status_code=422)
+    updated = await asyncio.to_thread(
+        history_store.update_view,
+        hid,
+        position,
+        reader_position=reader_position,
+        playback_position=playback_position,
+    )
+    if updated is None:
+        return JSONResponse({"error": "not_found", "detail": "history record not found"}, status_code=404)
+    return updated
+
+
 @app.delete("/api/history/{hid}")
 async def history_delete(hid: str):
     ok = history_store.delete(hid)
+    if ok and queue_api.store is not None:
+        queue_api.store.detach_history(hid)
     return {"deleted": ok}
 
 
 @app.delete("/api/history")
 async def history_clear():
     n = history_store.clear()
+    if queue_api.store is not None:
+        queue_api.store.detach_history()
     return {"cleared": n}
 
 
@@ -1896,7 +2129,12 @@ queue_api.init(
     request_cancel=_request_cancel,
     set_job_owner=_set_job_owner,
     is_ready=lambda: bool(boot_state.get("ready")) and not boot_state.get("switching"),
+    reserve_version_fn=lambda task_id: history_store.reserve_version(task_id),
+    save_result_fn=lambda payload: _save_result_payload(payload),
+    find_history_by_attempt_fn=lambda attempt: history_store.find_by_attempt(attempt),
 )
+# Repair any association lost between "history committed" and "queue updated".
+queue_api.reconcile_attempts()
 app.include_router(queue_api.router)
 
 if STATIC_DIR.exists():

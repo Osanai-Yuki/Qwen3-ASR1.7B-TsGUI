@@ -1,0 +1,95 @@
+[
+  {
+    "file": "downloads\\transcripts_20261030.zip",
+    "valid_crc": true,
+    "entries": [
+      "同名目录/重复名称.txt",
+      "同名目录/重复名称_2.txt",
+      "export-manifest.json"
+    ],
+    "manifest": {
+      "generated_at": "2026-10-30T04:22:37.256Z",
+      "format": "TXT",
+      "included": [
+        {
+          "id": "e663d8c703c9",
+          "title": "冲突名称视频",
+          "path": "同名目录/重复名称.txt",
+          "integrity": "complete"
+        },
+        {
+          "id": "7aa8ecf183ad",
+          "title": "冲突名称音频",
+          "path": "同名目录/重复名称.txt",
+          "integrity": "complete"
+        }
+      ],
+      "excluded_partial": []
+    },
+    "manifest_paths_match_archive": false
+  },
+  {
+    "file": "downloads\\10-export-default\\transcripts_20261030.zip",
+    "valid_crc": true,
+    "entries": [
+      "验收材料/产品发布复盘会议.txt",
+      "验收材料/音轨缺失的文字结果.txt",
+      "export-manifest.json"
+    ],
+    "manifest": {
+      "generated_at": "2026-10-30T04:24:32.630Z",
+      "format": "TXT",
+      "included": [
+        {
+          "id": "28df5f21ce42",
+          "title": "产品发布复盘会议",
+          "path": "验收材料/产品发布复盘会议.txt",
+          "integrity": "complete"
+        },
+        {
+          "id": "83a8fad7f094",
+          "title": "音轨缺失的文字结果",
+          "path": "验收材料/音轨缺失的文字结果.txt",
+          "integrity": "complete"
+        }
+      ],
+      "excluded_partial": [
+        {
+          "id": "e90aabc069bd",
+          "title": "研发访谈-有缺失",
+          "reason": "partial result excluded by default"
+        }
+      ]
+    },
+    "manifest_paths_match_archive": true
+  },
+  {
+    "file": "downloads\\11-export-conflicts\\transcripts_20261030.zip",
+    "valid_crc": true,
+    "entries": [
+      "同名目录/重复名称.txt",
+      "同名目录/重复名称_2.txt",
+      "export-manifest.json"
+    ],
+    "manifest": {
+      "generated_at": "2026-10-30T04:24:36.376Z",
+      "format": "TXT",
+      "included": [
+        {
+          "id": "e663d8c703c9",
+          "title": "冲突名称视频",
+          "path": "同名目录/重复名称.txt",
+          "integrity": "complete"
+        },
+        {
+          "id": "7aa8ecf183ad",
+          "title": "冲突名称音频",
+          "path": "同名目录/重复名称.txt",
+          "integrity": "complete"
+        }
+      ],
+      "excluded_partial": []
+    },
+    "manifest_paths_match_archive": false
+  }
+]
