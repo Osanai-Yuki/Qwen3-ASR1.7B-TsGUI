@@ -1590,7 +1590,9 @@ async def transcribe(
                     gpu_align_jobs.append((wav_path, text, start_offset))
             return text
 
-        async with httpx.AsyncClient(timeout=600.0) as client:
+        # Local llama-server only: ambient proxy env must not apply (httpx 0.28
+        # misparses NO_PROXY IPv6 entries like [::1] into invalid mount URLs).
+        async with httpx.AsyncClient(timeout=600.0, trust_env=False) as client:
             for i, entry in enumerate(chunks, 1):
                 # chunks are (chunk_path, start_offset, prev_end)
                 chunk_path, start_offset, prev_end = entry
