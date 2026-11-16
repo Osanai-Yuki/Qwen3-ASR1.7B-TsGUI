@@ -203,6 +203,33 @@ def test_transcribe_merges_chunks(tmp_path, monkeypatch):
     assert data["stats"]["asr_time"] > 0
 
 
+def test_transcribe_ignores_ambient_proxy_env(tmp_path, monkeypatch):
+    """The llama-server client must not read ambient proxy env: httpx 0.28
+    turns a NO_PROXY entry like [::1] into an unparseable mount URL."""
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,[::1],::1")
+    client = make_client(tmp_path=tmp_path)
+
+    chunk = tmp_path / "c0.wav"
+    chunk.write_bytes(_make_wav_bytes(0.1))
+    monkeypatch.setattr(main_mod, "probe_duration", lambda _p: 10.0)
+    monkeypatch.setattr(
+        main_mod, "split_audio", lambda _src, _out, _sec, _ov, **_kw: [(chunk, 0.0, 0.0)]
+    )
+
+    async def fake_chunk(client_arg, chunk_path, initial_prompt=None):
+        return {"text": "hello", "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}]}
+
+    monkeypatch.setattr(main_mod, "_transcribe_chunk", fake_chunk)
+
+    r = client.post(
+        "/api/transcribe",
+        files={"file": ("test.wav", _make_wav_bytes(0.2), "audio/wav")},
+        data={"align": "false"},
+    )
+    assert r.status_code == 200
+    assert r.json()["text"] == "hello"
+
+
 def test_resegment_cjk():
     words = [
         {"word": "\u4eca", "start": 0.0, "end": 0.3, "text": "\u4eca"},
