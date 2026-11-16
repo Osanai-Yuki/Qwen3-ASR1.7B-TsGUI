@@ -1,0 +1,168 @@
+{
+  "phase": "live",
+  "generated_at": "2026-10-30T08:05:00Z",
+  "model": "Qwen3-ASR-1.7B-Q8_0",
+  "aligner": "gpu:qwen-asr",
+  "checks": [
+    {
+      "name": "real short audio completes and persists",
+      "pass": true,
+      "details": {
+        "file": "real-short.wav",
+        "duration": 7.777,
+        "chars": 97,
+        "rtf": 0.123,
+        "status": "done",
+        "persistence_state": "saved",
+        "text": "Welcome to the project acceptance meeting. Today we are checking the speech transcription system."
+      }
+    },
+    {
+      "name": "real long audio cancels cooperatively and keeps the partial",
+      "pass": true,
+      "details": {
+        "file": "real-300s.wav",
+        "duration": 161.4,
+        "cancel": {
+          "ok": true,
+          "skipping": true
+        },
+        "final": {
+          "status": "cancelled",
+          "persistence_state": "saved",
+          "history_id": "8eee3f8d79b7"
+        }
+      }
+    },
+    {
+      "name": "reading A while B completes keeps A intact",
+      "pass": true,
+      "details": {
+        "bFinal": "done/saved",
+        "sameReaderNode": true,
+        "sameAudioNode": true,
+        "bodyUnchanged": true,
+        "findValue": "第 3 段",
+        "marks": 1,
+        "playbackSeconds": 2.5,
+        "stillOnA": true
+      }
+    },
+    {
+      "name": "history write failure keeps the text readable and the source",
+      "pass": true,
+      "details": {
+        "fault": "icacls data/history /deny Everyone:(W)",
+        "transcription": "real audio, real model",
+        "status": "done",
+        "persistence_state": "failed",
+        "error": "history_save_failed",
+        "history_id": null,
+        "stagedSourceKept": true,
+        "resultEndpoint": {
+          "kind": "temporary",
+          "text": "Welcome to the project acceptance meeting. Today, …"
+        },
+        "libraryTotalUnchanged": true
+      }
+    },
+    {
+      "name": "pending payload survives a backend restart",
+      "pass": true,
+      "details": {
+        "afterRestart": {
+          "kind": "temporary",
+          "textReadable": true,
+          "queue": "done/failed",
+          "temporary_result_available": true,
+          "can_retry_save": true
+        }
+      }
+    },
+    {
+      "name": "save retry re-commits without re-running ASR",
+      "pass": true,
+      "details": {
+        "toast": "已保存到长期记录。",
+        "afterStatus": "已完成",
+        "libraryTotalForRecord": 1,
+        "resultVersion": 1,
+        "newTranscription": false
+      }
+    },
+    {
+      "name": "library refreshes itself when a result completes",
+      "pass": true,
+      "details": {
+        "countsObserved": [
+          219,
+          220,
+          221,
+          222,
+          223,
+          224,
+          225,
+          226
+        ],
+        "userInteraction": "none (page stayed on the library)",
+        "selfInitiatedSearchRequests": [
+          115767,
+          158747,
+          241151,
+          356634,
+          418894
+        ],
+        "notCaptured": "a mid-flight 'running' frame, because transcription is faster than the tool round-trip"
+      }
+    },
+    {
+      "name": "no unhandled JS exceptions during the session",
+      "pass": true,
+      "details": []
+    },
+    {
+      "name": "concurrent save retry commits once",
+      "pass": true,
+      "details": {
+        "overlapping_requests": 2,
+        "save_calls": 1,
+        "statuses": [
+          200,
+          409
+        ],
+        "final": "saved with one history id"
+      }
+    },
+    {
+      "name": "save retry that returns no usable id is not reported as saved",
+      "pass": true,
+      "details": {
+        "status": 500,
+        "persistence_state": "failed",
+        "history_id": null,
+        "payload_still_readable": true,
+        "claim_released": true,
+        "exception_path": {
+          "status": 500,
+          "state": "failed",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "name": "save-failed item can be re-processed from its retained source",
+      "pass": true,
+      "details": {
+        "status": "error",
+        "persistence_state": "failed",
+        "retry_endpoint": "200 ok",
+        "requeued": true
+      }
+    }
+  ],
+  "notes": [
+    "One crash was found and fixed during verification: the reader assumed stats.rtf always exists, which broke on a temporary payload whose stats only carry the fields the pipeline had at that moment.",
+    "Two self-inflicted regressions were found and fixed: the results hook re-fetched on every `enabled` toggle (collapsing 72 rows back to 36 on return) and cleared pages without refetching on a query change.",
+    "The history view endpoint silently dropped reader_position/playback_position and defaulted an omitted position to 0, resetting playback on every scroll. Fixed and re-verified."
+  ]
+}

@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
+    "test:export-plan": "node --experimental-strip-types tests/exportPlan.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

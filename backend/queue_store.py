@@ -7,7 +7,7 @@ trivial and gives a natural monotonic ``version`` counter the frontend uses
 to skip no-op re-renders.
 
 Staged uploads live next to it in ``data/queue/uploads/<id><suffix>`` and are
-deleted once an item reaches ``done``/``cancelled`` (kept on ``error`` so the
+deleted once an item reaches ``done`` (kept on ``error``/``cancelled`` so the
 item can be retried).  Follows the same hardening conventions as history.py:
 module logger, 12-hex ids, containment-validated paths, corrupted state files
 are logged and rebuilt instead of crashing the app.
@@ -97,6 +97,21 @@ class QueueStore:
                 recovered += 1
         if recovered:
             logger.info("Queue recovery: reset %d running item(s) to queued", recovered)
+
+        # A save claim is owned by the process that took it.  The previous
+        # process is gone after a restart, so a persisted "saving" marker can
+        # never be valid here — leaving it would wedge every later save with
+        # "already in progress".  Reconcile re-derives the real capability
+        # flags from the recoverable payload.
+        stale_claims = 0
+        for it in self._state["items"]:
+            if it.get("persistence_state") == "saving":
+                it["persistence_state"] = "failed"
+                it["temporary_result_available"] = False
+                it["can_retry_save"] = False
+                stale_claims += 1
+        if stale_claims:
+            logger.info("Queue recovery: released %d stale save claim(s)", stale_claims)
 
         # Remove staged files that no longer belong to any item.
         known = {it.get("staged_name") for it in self._state["items"]}
@@ -195,17 +210,64 @@ class QueueStore:
             it = self._find_locked(qid)
             return dict(it) if it else None
 
+    def detach_history(self, history_id: str | None = None) -> int:
+        """Clear deleted history links while keeping the batch task visible.
+
+        The persistence flags must be reset with the link: leaving
+        ``persistence_state="saved"`` on a row whose ``history_id`` is now None
+        makes the batch summary claim a durable result that no longer exists,
+        and the task page would keep showing a saved state with nothing to open.
+        """
+        changed = 0
+        with self._lock:
+            for it in self._state["items"]:
+                if it.get("history_id") and (history_id is None or it["history_id"] == history_id):
+                    it["history_id"] = None
+                    it["error"] = "history_deleted"
+                    it["persistence_state"] = "unavailable"
+                    it["temporary_result_available"] = False
+                    it["can_retry_save"] = False
+                    it["save_error"] = None
+                    it["attempt_id"] = None
+                    it["result_version"] = None
+                    changed += 1
+            if changed:
+                self._save_locked()
+        return changed
+
     def add(self, *, qid: str, filename: str, staged_name: str, size: int,
-            align: bool) -> dict:
+            align: bool, batch_id: str | None = None,
+            batch_name: str | None = None, source_path: str | None = None,
+            title: str | None = None,
+            client_import_id: str | None = None) -> dict:
         item = {
             "id": qid,
             "filename": filename or "unknown",
+            "title": title or Path(filename or "transcript").stem or "transcript",
+            "batch_id": batch_id,
+            "batch_name": batch_name,
+            "source_path": source_path,
             "staged_name": staged_name,
             "size": int(size),
             "align": bool(align),
             "status": "queued",
+            "integrity": None,
+            "missing_ranges": [],
+            "alignment_fallback": False,
             "history_id": None,
             "error": None,
+            # Attempt/persistence identity.  ``attempt_id`` is minted when a
+            # real execution starts (begin_attempt) and is what a save retry
+            # must reuse; ``persistence_state`` is orthogonal to ``status`` so
+            # "transcription finished" and "the text reached durable storage"
+            # are never conflated.
+            "attempt_id": None,
+            "result_version": None,
+            "persistence_state": "unavailable",
+            "temporary_result_available": False,
+            "can_retry_save": False,
+            "save_error": None,
+            "client_import_id": client_import_id,
             "added_at": _now_iso(),
             "finished_at": None,
         }
@@ -214,8 +276,176 @@ class QueueStore:
             self._save_locked()
         return dict(item)
 
+    def begin_attempt(self, qid: str) -> dict | None:
+        """Mint a fresh ``attempt_id`` for the execution about to start.
+
+        A retry (re-process from the original file) must produce a *new*
+        attempt, so any previous attempt id is replaced.  The reserved
+        ``result_version`` is filled in by the caller (which has to consult
+        the history store for the task's version counter) via
+        :meth:`set_attempt_version`.
+        """
+        with self._lock:
+            it = self._find_locked(qid)
+            if it is None:
+                return None
+            it["attempt_id"] = _new_id()
+            it["result_version"] = None
+            it["persistence_state"] = "pending"
+            it["temporary_result_available"] = False
+            it["can_retry_save"] = False
+            it["save_error"] = None
+            self._save_locked()
+            return dict(it)
+
+    def set_attempt_version(self, qid: str, version: int) -> bool:
+        with self._lock:
+            it = self._find_locked(qid)
+            if it is None:
+                return False
+            it["result_version"] = int(version)
+            self._save_locked()
+            return True
+
+    def try_claim_save(self, qid: str, attempt_id: str) -> str:
+        """Atomically claim the right to save one attempt.
+
+        Returns ``"claimed"`` to exactly one caller, ``"conflict"`` when another
+        caller already holds the claim, and ``"absent"`` when the item does not
+        exist or the attempt does not match.  Without this, two overlapping save
+        requests both pass the ``history_id is None`` check and both commit,
+        producing two history records for one attempt.
+        """
+        with self._lock:
+            it = self._find_locked(qid)
+            if it is None or it.get("attempt_id") != attempt_id:
+                return "absent"
+            state = it.get("persistence_state")
+            if state == "saving":
+                return "conflict"
+            if state in ("saved", "pending", "unavailable"):
+                return "conflict"
+            it["persistence_state"] = "saving"
+            self._save_locked()
+            return "claimed"
+
+    def release_save_claim(self, qid: str, *, failed: bool, attempt_id: str | None = None) -> bool:
+        """Give the claim back so a failed save can be retried."""
+        with self._lock:
+            it = self._find_locked(qid)
+            if it is None:
+                return False
+            if attempt_id is not None and it.get("attempt_id") != attempt_id:
+                return False
+            if it.get("persistence_state") != "saving":
+                return False
+            it["persistence_state"] = "failed" if failed else "saved"
+            self._save_locked()
+            return True
+
+    def requeue_for_reprocess(self, qid: str) -> str:
+        """Atomically move a retryable item back to ``queued``.
+
+        Returns ``"queued"``, ``"absent"``, ``"not_retryable"`` or
+        ``"saving"``.  Refusing a retry while a save claim is held is what
+        stops a re-process from racing the save: otherwise the late save
+        rewrites the fresh attempt back to ``done`` and deletes its source.
+        """
+        with self._lock:
+            it = self._find_locked(qid)
+            if it is None:
+                return "absent"
+            if it.get("status") not in ("error", "cancelled"):
+                return "not_retryable"
+            if it.get("persistence_state") == "saving":
+                return "saving"
+            it["status"] = "queued"
+            it["error"] = None
+            it["finished_at"] = None
+            it["attempt_id"] = None
+            it["result_version"] = None
+            it["persistence_state"] = "unavailable"
+            it["temporary_result_available"] = False
+            it["can_retry_save"] = False
+            it["save_error"] = None
+            self._save_locked()
+            return "queued"
+
+    def commit_save(
+        self,
+        qid: str,
+        attempt_id: str,
+        history_id: str,
+        *,
+        intended_status: str,
+        result: dict | None = None,
+    ) -> bool:
+        """Attach a committed history record to the still-current attempt.
+
+        The save ran outside the lock; before reporting success it must prove
+        nobody re-processed or deleted the task meanwhile.  Returns False when
+        the attempt/claim is no longer ours, so a late save cannot overwrite
+        newer ownership.
+        """
+        if intended_status not in STATUSES:
+            return False
+        with self._lock:
+            it = self._find_locked(qid)
+            if it is None or it.get("attempt_id") != attempt_id:
+                return False
+            if it.get("persistence_state") != "saving":
+                return False
+            it["status"] = intended_status
+            it["history_id"] = history_id
+            it["error"] = None
+            if result:
+                it["integrity"] = result.get("integrity", it.get("integrity"))
+                it["missing_ranges"] = result.get("missing_ranges", it.get("missing_ranges", []))
+                it["alignment_fallback"] = bool(result.get("alignment_fallback", it.get("alignment_fallback", False)))
+            if intended_status in TERMINAL_STATUSES:
+                it["finished_at"] = _now_iso()
+            it["persistence_state"] = "saved"
+            it["temporary_result_available"] = False
+            it["can_retry_save"] = False
+            it["save_error"] = None
+            self._save_locked()
+            return True
+
+    def set_persistence(
+        self,
+        qid: str,
+        *,
+        state: str,
+        history_id: str | None = None,
+        attempt_id: str | None = None,
+        temporary: bool = False,
+        can_retry_save: bool = False,
+        save_error: str | None = None,
+        integrity: str | None = None,
+    ) -> bool:
+        """Update only the persistence fields, leaving ``status`` alone."""
+        if state not in ("pending", "saved", "failed", "unavailable", "saving"):
+            return False
+        with self._lock:
+            it = self._find_locked(qid)
+            if it is None:
+                return False
+            it["persistence_state"] = state
+            if history_id is not None:
+                it["history_id"] = history_id
+            if attempt_id is not None:
+                it["attempt_id"] = attempt_id
+            it["temporary_result_available"] = bool(temporary)
+            it["can_retry_save"] = bool(can_retry_save)
+            it["save_error"] = save_error
+            if integrity:
+                it["integrity"] = integrity
+            self._save_locked()
+            return True
+
     def set_status(self, qid: str, status: str, *, history_id: str | None = None,
-                   error: str | None = None) -> bool:
+                   error: str | None = None, clear_history: bool = False,
+                   result: dict | None = None) -> bool:
         if status not in STATUSES:
             return False
         with self._lock:
@@ -223,14 +453,29 @@ class QueueStore:
             if it is None:
                 return False
             it["status"] = status
-            if history_id is not None:
+            if clear_history:
+                it["history_id"] = None
+            elif history_id is not None:
                 it["history_id"] = history_id
-            if status == "queued":
-                # retry / slot-busy release: wipe stale failure metadata
+            if result:
+                it["integrity"] = result.get("integrity", it.get("integrity"))
+                it["missing_ranges"] = result.get("missing_ranges", it.get("missing_ranges", []))
+                it["alignment_fallback"] = bool(result.get("alignment_fallback", it.get("alignment_fallback", False)))
+            if status in ("queued", "running"):
+                # retry / new attempt / slot-busy release: wipe stale failure
+                # metadata.  A retry is a *new* execution, so the previous
+                # attempt id must not survive to be mistaken for this run's.
                 it["error"] = None
                 it["finished_at"] = None
+                if status == "queued":
+                    it["attempt_id"] = None
+                    it["result_version"] = None
+                    it["persistence_state"] = "unavailable"
+                    it["temporary_result_available"] = False
+                    it["can_retry_save"] = False
+                    it["save_error"] = None
             else:
-                it["error"] = error if status == "error" else it.get("error")
+                it["error"] = error
                 if status in TERMINAL_STATUSES:
                     it["finished_at"] = _now_iso()
             self._save_locked()
@@ -297,17 +542,26 @@ class QueueStore:
             return dict(it)
 
     def clear_finished(self) -> int:
-        """Drop all terminal items (and any staged file kept for retry)."""
+        """Drop completed items only; failed and cancelled items stay actionable.
+
+        A transcription whose *save* failed also carries ``status == "done"``,
+        but its text only exists as a recoverable payload — dropping it here
+        would destroy the only readable copy.  Those stay until the user
+        re-saves or explicitly deletes them.
+        """
         with self._lock:
             finished = [
                 it for it in self._state["items"]
-                if it["status"] in TERMINAL_STATUSES
+                if it["status"] == "done"
+                and it.get("persistence_state") != "failed"
+                and it.get("save_error") != "history_save_failed"
             ]
+            finished_ids = {it["id"] for it in finished}
             for it in finished:
                 self._unlink_staged(it)
             self._state["items"] = [
                 it for it in self._state["items"]
-                if it["status"] not in TERMINAL_STATUSES
+                if it["id"] not in finished_ids
             ]
             self._save_locked()
             return len(finished)

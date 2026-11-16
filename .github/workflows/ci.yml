@@ -21,6 +21,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run test:export-plan
       - run: npm run build
 
   backend:
@@ -45,4 +46,4 @@ jobs:
       - name: Run test suite (SKIP_LLAMA=1)
         env:
           SKIP_LLAMA: "1"
-        run: python -m pytest backend/test_main.py -q
+        run: python -m pytest backend/test_main.py backend/test_repair.py backend/test_repair_review.py -q

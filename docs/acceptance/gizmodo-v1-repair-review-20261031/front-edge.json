@@ -1,0 +1,15 @@
+[
+  {
+    "name": "usual collisions",
+    "pass": true,
+    "paths": [
+      "folder/same.txt",
+      "folder/same__87654321.txt"
+    ]
+  },
+  {
+    "name": "three valid ids sharing suffix prefix",
+    "pass": false,
+    "reason": "worker did not finish in 1500ms; export allocator loops"
+  }
+]

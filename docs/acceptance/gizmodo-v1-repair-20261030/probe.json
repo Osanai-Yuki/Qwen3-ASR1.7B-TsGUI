@@ -1,0 +1,195 @@
+{
+  "phase": "probe",
+  "generated_at": "2026-10-30T08:05:00Z",
+  "interpreter": "3.12.13",
+  "backend": "127.0.0.1:8765",
+  "build": {
+    "js": "index-Byki_hca.js",
+    "js_md5": "7c307fe2abe5140a5e863f11ceb59e5e",
+    "css": "index-B7udBvg5.css",
+    "css_md5": "b9ecb1363036bde4ed08211348163e42"
+  },
+  "checks": [
+    {
+      "name": "search finds a record past the 200-row ceiling",
+      "pass": true,
+      "details": {
+        "query": "梧桐计划",
+        "total": 1,
+        "records_in_store": 216
+      }
+    },
+    {
+      "name": "title hit reports where it matched",
+      "pass": true,
+      "details": {
+        "query": "历史验收记录-000",
+        "match_fields": [
+          "title",
+          "filename"
+        ],
+        "first_match": {
+          "field": "title",
+          "offset": null
+        }
+      }
+    },
+    {
+      "name": "body hit reports a text offset",
+      "pass": true,
+      "details": {
+        "query": "用于验证超过",
+        "match_fields": [],
+        "first_match": {
+          "field": "text",
+          "offset": 11
+        }
+      }
+    },
+    {
+      "name": "query matching neither field nor body returns nothing",
+      "pass": true,
+      "details": {
+        "query": "不存在的词xyz",
+        "total": 0
+      }
+    },
+    {
+      "name": "batch keeps the highest result_version per task",
+      "pass": true,
+      "details": {
+        "task": "同秒任务.wav",
+        "rows_in_batch": 1,
+        "selected_version": 2,
+        "selected_history_id": "4a4703ab9c2c"
+      }
+    },
+    {
+      "name": "legacy records without task_id stay independent",
+      "pass": true,
+      "details": {
+        "legacy_batch_rows": 2,
+        "note": "two same-named legacy files are two rows"
+      }
+    },
+    {
+      "name": "no-segment result reports no timing capability",
+      "pass": true,
+      "details": {
+        "record": "真实语音转写-B.wav",
+        "timing": {
+          "level": "none",
+          "source": "asr",
+          "alignment_requested": false,
+          "alignment_succeeded": false,
+          "segment_count": 0,
+          "fallback_reason": "alignment_not_requested"
+        }
+      }
+    },
+    {
+      "name": "aligned result reports segment level, not word",
+      "pass": true,
+      "details": {
+        "record": "产品发布复盘会议.wav",
+        "timing": {
+          "level": "segment",
+          "source": "forced_alignment",
+          "alignment_requested": true,
+          "alignment_succeeded": true,
+          "segment_count": 2,
+          "fallback_reason": null
+        }
+      }
+    },
+    {
+      "name": "reader_position is independent of playback_position",
+      "pass": true,
+      "details": {
+        "sequence": [
+          {
+            "body": {
+              "reader_position": {
+                "segment_index": 10,
+                "scroll_ratio": 0.5
+              }
+            },
+            "playback_position": 0.0
+          },
+          {
+            "body": {
+              "position": 5.0
+            },
+            "playback_position": 5.0,
+            "reader_position_kept": true
+          },
+          {
+            "body": {
+              "position": 7.0,
+              "reader_position": {
+                "segment_index": 12,
+                "scroll_ratio": 0.7
+              }
+            },
+            "playback_position": 7.0,
+            "reader_position": {
+              "segment_index": 12,
+              "scroll_ratio": 0.7
+            }
+          },
+          {
+            "body": {},
+            "playback_position": 7.0,
+            "reader_position_kept": true
+          }
+        ],
+        "note": "an omitted position no longer resets playback to 0"
+      }
+    },
+    {
+      "name": "queue summary stays lightweight (no transcript embedded)",
+      "pass": true,
+      "details": {
+        "embeds_text": false,
+        "new_flag_fields": [
+          "attempt_id",
+          "result_version",
+          "persistence_state",
+          "temporary_result_available",
+          "can_retry_save",
+          "save_error",
+          "client_import_id"
+        ]
+      }
+    },
+    {
+      "name": "deleting a queue item reaps its recoverable payload",
+      "pass": true,
+      "details": {
+        "before": {
+          "persistence_state": "failed",
+          "attempt_present": true
+        },
+        "delete": {
+          "status": 200,
+          "ok": true
+        },
+        "after": {
+          "item": "removed",
+          "result_endpoint": "404 not_found",
+          "orphan_on_disk": false
+        }
+      }
+    },
+    {
+      "name": "deleting a history record resets the queue row's persistence flags",
+      "pass": true,
+      "details": {
+        "row": "fault-inject.wav",
+        "history_id": null,
+        "persistence_state": "unavailable",
+        "before": "saved"
+      }
+    }
+  ]
+}
