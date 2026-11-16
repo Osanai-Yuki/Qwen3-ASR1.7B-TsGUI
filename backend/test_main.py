@@ -630,6 +630,9 @@ def test_extract_failure_clears_partial_cache_mp3(tmp_path, monkeypatch):
     cache_dir.mkdir()
     monkeypatch.setattr(main_mod, "AUDIO_CACHE_DIR", cache_dir)
     monkeypatch.setattr(main_mod, "is_video_file", lambda _p: True)
+    # The bitrate probe runs before extraction and raises FFmpegMissingError
+    # on hosts without ffmpeg, short-circuiting the extract_failed path.
+    monkeypatch.setattr(main_mod, "probe_audio_bitrate", lambda _p: None)
 
     def fake_extract(_src, dst, _br):
         dst.write_bytes(b"ID3partial")  # partial output left behind, like a timeout
