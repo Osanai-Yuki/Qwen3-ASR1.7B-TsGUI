@@ -169,6 +169,7 @@ export interface HistoryItem {
   reader_position?: ReaderPosition | null;
   playback_position?: number;
   timing?: TimingInfo | null;
+  summary?: WorkbenchSummary | null;
   match_fields?: string[];
   first_match?: { field: string; offset: number | null } | null;
   snippet?: string;
@@ -316,6 +317,13 @@ export interface QueueItem {
   can_retry_save?: boolean;
   save_error?: string | null;
   client_import_id?: string | null;
+  source_mode?: "upload" | "reference";
+  root_id?: string | null;
+  export_state?: "pending" | "done" | "failed" | "skipped";
+  export_paths?: { format: string; path: string; name: string }[];
+  export_error?: string | null;
+  summary_state?: "pending" | "done" | "failed" | "skipped";
+  summary_error?: string | null;
 }
 
 /** GET /api/queue/items/{qid}/result — a saved result points at history; a
@@ -396,3 +404,57 @@ export interface QueueStateResponse {
 
 /** POST /api/queue/sort keys. */
 export type QueueSortKey = "name" | "size" | "added_at";
+
+/* Workbench mode (backend/workbench.py) */
+
+export interface WorkbenchRoot {
+  id: string;
+  path: string;
+  label: string;
+  added_at: string;
+}
+
+export interface WorkbenchConfig {
+  version: number;
+  roots: WorkbenchRoot[];
+  export_root: string | null;
+  formats: string[];
+  auto_export: boolean;
+  summarize: boolean;
+  summary_model: string | null;
+}
+
+export interface WorkbenchScanItem {
+  rel_path: string;
+  size: number;
+  mtime: string;
+}
+
+export interface WorkbenchScanResponse {
+  items: WorkbenchScanItem[];
+  truncated: boolean;
+}
+
+export interface WorkbenchSummary {
+  title: string;
+  summary: string;
+  keywords: string[];
+  highlights: string[];
+  model: string;
+  generated_at: string;
+  state: "done" | "failed";
+}
+
+export interface SummaryPhaseState {
+  phase: "idle" | "swapping_in" | "summarizing" | "swapping_back" | "finished" | "failed" | "interrupted";
+  batch_id: string | null;
+  done: number;
+  total: number;
+  model: string | null;
+  error: string | null;
+}
+
+export interface SummaryModelInfo {
+  name: string;
+  size: number;
+}

@@ -684,6 +684,9 @@ def test_extract_failure_clears_partial_cache_mp3(tmp_path, monkeypatch):
 
 def test_llama_runner_stops_process_on_startup_failure(tmp_path, monkeypatch):
     """A failed llama-server startup must not leave a leaked subprocess."""
+    # Hostile ambient proxy env: the port probes must not read it (httpx 0.28
+    # misparses NO_PROXY IPv6 entries and would crash stop() instead).
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,[::1],::1")
     runner = LlamaRunner(
         bin_path=str(tmp_path / "llama-server.exe"),
         host="127.0.0.1",

@@ -41,6 +41,8 @@ from .resegment import resegment_words
 from .text_clean import clean_asr_text, clean_segments, seam_overlap
 from .history import HistoryStore, derive_timing_info
 from . import queue_api
+from . import workbench
+from . import summary
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("asr")
@@ -737,6 +739,55 @@ def _start_asr(
     _set_boot(current_model=runner.current_model)
 
 
+_SUMMARY_PREV_ASR: dict | None = None
+
+
+def _scan_summary_models() -> list[dict]:
+    directory = MODELS_DIR / "summary"
+    if not directory.exists():
+        return []
+    return [
+        {"name": p.stem, "path": str(p), "size": p.stat().st_size}
+        for p in sorted(directory.glob("*.gguf"))
+    ]
+
+
+def _summary_swap_in(model_path: str) -> None:
+    """Swap ASR out for the instruct model; remember what to restore."""
+    global _SUMMARY_PREV_ASR
+    with job_lock:
+        if job_state["status"] in ("preparing", "transcribing", "aligning"):
+            raise RuntimeError("a transcription is in progress")
+        if boot_state.get("switching"):
+            raise RuntimeError("a model switch is in progress")
+        current = runner.current_model
+        match = next((m for m in _scan_asr_models() if m["name"] == current), None)
+        _SUMMARY_PREV_ASR = {
+            "model_path": match["path"] if match else ASR_MODEL,
+            "mmproj": match["mmproj"] if match else ASR_MMPROJ,
+            "name": current,
+        }
+        _set_boot(switching=True, phase="asr_switching", ready=False, error=None)
+    _start_asr(model_path=model_path, mmproj_path=None, ctx_size=8192,
+               model_name=Path(model_path).stem)
+    _set_boot(switching=False, ready=False, phase="summarizing")
+
+
+def _summary_swap_out() -> None:
+    prev = _SUMMARY_PREV_ASR or {"model_path": ASR_MODEL, "mmproj": ASR_MMPROJ, "name": None}
+    with job_lock:
+        _set_boot(switching=True, phase="asr_switching", ready=False, error=None)
+    _start_asr(model_path=prev["model_path"], mmproj_path=prev["mmproj"], model_name=prev["name"])
+    _set_boot(switching=False, ready=True, phase="ready", error=None)
+
+
+def _summary_gate(active: bool) -> None:
+    if active:
+        _set_boot(ready=False, phase="summarizing", error=None)
+    else:
+        _set_boot(ready=True, phase="ready", error=None)
+
+
 def _warmup_asr():
     try:
         wav_bytes = _make_silent_wav(0.3)
@@ -746,6 +797,7 @@ def _warmup_asr():
             data={"response_format": "json"},
             headers=_LLAMA_HEADERS,
             timeout=60.0,
+            trust_env=False,
         )
         if r.status_code == 200:
             logger.info("ASR warmup OK")
@@ -1330,6 +1382,12 @@ async def transcribe(
     # the shared llama-server. _claim_job atomically checks-and-sets under
     # job_lock to avoid the TOCTOU a naive check-then-proceed would leave.
     if not _claim_job():
+        if summary.busy():
+            return JSONResponse(
+                {"error": "batch_summarizing",
+                 "detail": "batch summarization holds the model slot; retry after it finishes"},
+                status_code=409,
+            )
         return JSONResponse(
             {"error": "busy", "detail": "a transcription is already in progress"},
             status_code=409,
@@ -1867,6 +1925,12 @@ async def align_standalone(
 
     # Share the single job slot so align can't run alongside a transcription.
     if not _claim_job():
+        if summary.busy():
+            return JSONResponse(
+                {"error": "batch_summarizing",
+                 "detail": "batch summarization holds the model slot; retry after it finishes"},
+                status_code=409,
+            )
         return JSONResponse(
             {"error": "busy", "detail": "a job is already in progress"},
             status_code=409,
@@ -2134,10 +2198,39 @@ queue_api.init(
     reserve_version_fn=lambda task_id: history_store.reserve_version(task_id),
     save_result_fn=lambda payload: _save_result_payload(payload),
     find_history_by_attempt_fn=lambda attempt: history_store.find_by_attempt(attempt),
+    workbench=workbench,
+    auto_export_fn=workbench.auto_export,
+    read_history_fn=lambda hid: history_store.get(hid),
+    maybe_summarize_fn=summary.maybe_start_batch,
 )
 # Repair any association lost between "history committed" and "queue updated".
 queue_api.reconcile_attempts()
 app.include_router(queue_api.router)
+workbench.init(data_dir=DATA_DIR, allowed_suffixes=_ALLOWED_UPLOAD_SUFFIXES)
+app.include_router(workbench.router)
+summary.init(
+    data_dir=DATA_DIR,
+    swap_in_fn=_summary_swap_in,
+    swap_out_fn=_summary_swap_out,
+    read_history_fn=lambda hid: history_store.get(hid),
+    save_summary_fn=lambda hid, s: history_store.save_summary(hid, s),
+    list_batch_items_fn=lambda bid: [
+        it for it in (queue_api.store.snapshot()["items"] if queue_api.store else [])
+        if it.get("batch_id") == bid
+    ],
+    find_item_by_history_fn=lambda hid: next((
+        it for it in (queue_api.store.snapshot()["items"] if queue_api.store else [])
+        if it.get("history_id") == hid
+    ), None),
+    set_item_summary_fn=lambda qid, state, error: (
+        queue_api.store.set_summary(qid, state, error) if queue_api.store else False
+    ),
+    set_gate_fn=_summary_gate,
+    config_fn=lambda: workbench.store.snapshot() if workbench.store else {},
+    list_summary_models_fn=_scan_summary_models,
+    base_url_fn=lambda: runner.base_url,
+)
+app.include_router(summary.router)
 
 if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

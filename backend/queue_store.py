@@ -145,6 +145,8 @@ class QueueStore:
     def staged_path(self, item: dict) -> Path:
         """Containment-validated absolute path for an item's staged upload."""
         name = item.get("staged_name") or ""
+        if not name:
+            raise ValueError("no staged file")
         path = (self.uploads_dir / Path(name).name).resolve()
         if path.parent != self.uploads_dir.resolve():
             raise ValueError("invalid staged name")
@@ -235,11 +237,12 @@ class QueueStore:
                 self._save_locked()
         return changed
 
-    def add(self, *, qid: str, filename: str, staged_name: str, size: int,
+    def add(self, *, qid: str, filename: str, staged_name: str | None, size: int,
             align: bool, batch_id: str | None = None,
             batch_name: str | None = None, source_path: str | None = None,
             title: str | None = None,
-            client_import_id: str | None = None) -> dict:
+            client_import_id: str | None = None,
+            source_mode: str = "upload", root_id: str | None = None) -> dict:
         item = {
             "id": qid,
             "filename": filename or "unknown",
@@ -247,6 +250,8 @@ class QueueStore:
             "batch_id": batch_id,
             "batch_name": batch_name,
             "source_path": source_path,
+            "source_mode": source_mode if source_mode in ("upload", "reference") else "upload",
+            "root_id": root_id,
             "staged_name": staged_name,
             "size": int(size),
             "align": bool(align),
@@ -270,6 +275,11 @@ class QueueStore:
             "client_import_id": client_import_id,
             "added_at": _now_iso(),
             "finished_at": None,
+            "export_state": "pending",
+            "export_paths": [],
+            "export_error": None,
+            "summary_state": "pending",
+            "summary_error": None,
         }
         with self._lock:
             self._state["items"].append(item)
@@ -440,6 +450,32 @@ class QueueStore:
             it["save_error"] = save_error
             if integrity:
                 it["integrity"] = integrity
+            self._save_locked()
+            return True
+
+    def set_export(self, qid: str, state: str, *, paths: list | None = None,
+                   error: str | None = None) -> bool:
+        if state not in ("pending", "done", "failed", "skipped"):
+            return False
+        with self._lock:
+            it = self._find_locked(qid)
+            if it is None:
+                return False
+            it["export_state"] = state
+            it["export_paths"] = list(paths or [])
+            it["export_error"] = error
+            self._save_locked()
+            return True
+
+    def set_summary(self, qid: str, state: str, error: str | None = None) -> bool:
+        if state not in ("pending", "done", "failed", "skipped"):
+            return False
+        with self._lock:
+            it = self._find_locked(qid)
+            if it is None:
+                return False
+            it["summary_state"] = state
+            it["summary_error"] = error
             self._save_locked()
             return True
 

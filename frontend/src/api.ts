@@ -25,6 +25,11 @@ import type {
   SwitchModelRequest,
   SwitchModelResponse,
   TranscribeResponse,
+  WorkbenchConfig,
+  WorkbenchRoot,
+  WorkbenchScanResponse,
+  SummaryPhaseState,
+  SummaryModelInfo,
 } from "./types";
 
 /** PATCH /api/history/{hid}/view response. */
@@ -305,4 +310,92 @@ export async function resumeQueue(): Promise<{ ok: boolean; paused: boolean }> {
 export async function clearFinishedQueue(): Promise<{ cleared: number }> {
   const res = await fetch("/api/queue/finished", { method: "DELETE" });
   return (await res.json()) as { cleared: number };
+}
+
+/* Workbench mode (backend/workbench.py) */
+
+export function fetchWorkbenchConfig(): Promise<WorkbenchConfig> {
+  return getJson<WorkbenchConfig>("/api/workbench/config");
+}
+
+export async function updateWorkbenchConfig(
+  patch: Partial<Pick<WorkbenchConfig, "export_root" | "formats" | "auto_export" | "summarize" | "summary_model">>,
+): Promise<WorkbenchConfig | ApiError> {
+  const res = await fetch("/api/workbench/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return (await res.json()) as WorkbenchConfig | ApiError;
+}
+
+export async function addWorkbenchRoot(path: string): Promise<{ root: WorkbenchRoot } | ApiError> {
+  const res = await fetch("/api/workbench/roots", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return (await res.json()) as { root: WorkbenchRoot } | ApiError;
+}
+
+export async function removeWorkbenchRoot(id: string): Promise<{ ok: boolean } | ApiError> {
+  const res = await fetch(`/api/workbench/roots/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return (await res.json()) as { ok: boolean } | ApiError;
+}
+
+export function scanWorkbenchRoot(rootId: string, limit = 2000): Promise<WorkbenchScanResponse | ApiError> {
+  return getJson<WorkbenchScanResponse | ApiError>(
+    `/api/workbench/scan?root=${encodeURIComponent(rootId)}&limit=${limit}`,
+  );
+}
+
+/** POST /api/queue/reference — enqueue files in place from an approved root. */
+export async function enqueueReference(
+  rootId: string,
+  relPaths: string[],
+  align: boolean,
+  batchName: string,
+): Promise<{ items: QueueItem[]; batch_id: string } | ApiError> {
+  const res = await fetch("/api/queue/reference", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root_id: rootId, rel_paths: relPaths, align, batch_name: batchName }),
+  });
+  return (await res.json()) as { items: QueueItem[]; batch_id: string } | ApiError;
+}
+
+/** POST /api/queue/items/{id}/export — re-export a durable result on demand. */
+export async function reexportQueueItem(
+  id: string,
+): Promise<{ ok: boolean; state: string; paths: { format: string; path: string; name: string }[] } | ApiError> {
+  const res = await fetch(`/api/queue/items/${encodeURIComponent(id)}/export`, { method: "POST" });
+  return (await res.json()) as { ok: boolean; state: string; paths: { format: string; path: string; name: string }[] } | ApiError;
+}
+
+/* Workbench summarization phase (backend/summary.py) */
+
+export function fetchSummaryState(): Promise<SummaryPhaseState> {
+  return getJson<SummaryPhaseState>("/api/workbench/summary-state");
+}
+
+export function fetchSummaryModels(): Promise<{ models: SummaryModelInfo[] }> {
+  return getJson<{ models: SummaryModelInfo[] }>("/api/workbench/summary-models");
+}
+
+export async function startBatchSummary(batchId: string): Promise<{ ok: boolean; queued: boolean } | ApiError> {
+  const res = await fetch("/api/workbench/summarize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ batch_id: batchId }),
+  });
+  return (await res.json()) as { ok: boolean; queued: boolean } | ApiError;
+}
+
+export async function retryItemSummary(historyId: string): Promise<{ ok: boolean; queued: boolean } | ApiError> {
+  const res = await fetch("/api/workbench/summarize-item", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ history_id: historyId }),
+  });
+  return (await res.json()) as { ok: boolean; queued: boolean } | ApiError;
 }
