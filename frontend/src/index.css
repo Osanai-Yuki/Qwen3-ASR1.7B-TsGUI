@@ -760,3 +760,30 @@ mark { color: inherit; background: var(--accent); }
     transition-duration: .01ms !important;
   }
 }
+
+/* Workbench mode: folder roots, scan preview, and the results table. */
+.asr-wb-page { display: grid; gap: 22px; }
+.asr-wb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.asr-wb-panel { border-top: 3px solid var(--ink); padding-top: 14px; display: grid; gap: 12px; align-content: start; }
+.asr-wb-panel h3 { font-size: 17px; font-weight: 700; }
+.asr-wb-root-add { display: flex; gap: 8px; align-items: center; }
+.asr-wb-input { flex: 1; min-width: 0; border: 2px solid var(--ink); border-radius: 8px; background: var(--paper); color: var(--ink); padding: 8px 10px; font-size: 13px; }
+.asr-wb-roots { list-style: none; display: grid; gap: 6px; }
+.asr-wb-roots li { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.asr-wb-root { text-align: left; font-weight: 600; font-size: 13px; padding: 4px 2px; border-bottom: 3px solid transparent; }
+.asr-wb-root.selected { border-bottom-color: var(--accent); }
+.asr-wb-formats { display: flex; flex-wrap: wrap; gap: 10px 16px; }
+.asr-wb-scanbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.asr-wb-scanbar .asr-wb-input { flex: 1 1 180px; }
+.asr-wb-scanlist { max-height: 260px; overflow: auto; border-top: 1px solid var(--line); }
+.asr-wb-scanrow { display: flex; align-items: center; gap: 10px; padding: 7px 2px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.asr-wb-scanpath { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asr-wb-table { border-top: 3px solid var(--ink); overflow-x: auto; }
+.asr-wb-head, .asr-wb-row { display: grid; grid-template-columns: minmax(180px, 2fr) minmax(120px, 1.4fr) 70px 130px minmax(90px, 1fr) minmax(90px, 1fr) minmax(140px, 1.2fr) 60px; gap: 12px; align-items: start; padding: 10px 6px; min-width: 900px; }
+.asr-wb-head { font-size: 12px; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--ink); position: sticky; top: 0; background: var(--soft); }
+.asr-wb-row { border-bottom: 1px solid var(--line); font-size: 13px; }
+.asr-wb-row > span { display: grid; gap: 3px; align-content: start; min-width: 0; }
+.asr-wb-muted { color: var(--muted-2); }
+@media (max-width: 900px) {
+  .asr-wb-grid { grid-template-columns: 1fr; }
+}

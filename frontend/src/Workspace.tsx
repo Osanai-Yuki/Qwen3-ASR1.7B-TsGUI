@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import {
   clearAudioCache, clearFinishedQueue, deleteQueueItem, enqueueFiles, fetchAudioCache,
-  fetchBatches, fetchHealth, fetchHistoryRecord, fetchLimits, fetchQueueItemResult,
+  fetchBatches, fetchHealth, fetchHistory, fetchHistoryRecord, fetchLimits, fetchQueueItemResult,
   deleteHistory, fetchQueue, shutdownApp, pauseQueue, reorderQueue, resumeQueue, retryQueueItem, retryQueueSave,
   updateHistoryView,
+  addWorkbenchRoot, enqueueReference, fetchWorkbenchConfig, reexportQueueItem,
+  removeWorkbenchRoot, scanWorkbenchRoot, updateWorkbenchConfig,
 } from "./api";
 import { useJobStatus } from "./hooks/useJobStatus";
 import { useQueue } from "./hooks/useQueue";
@@ -11,10 +13,11 @@ import { useReadiness, phaseLabel } from "./hooks/useReadiness";
 import { useHistoryResults, type ResultFilter } from "./hooks/useHistoryResults";
 import type {
   AppLimits, BatchSummary, BatchTask, HealthResponse, HistoryItem, HistoryRecord,
-  QueueItem, ReaderPosition, ResultRef, TimingInfo,
+  QueueItem, ReaderPosition, ResultRef, TimingInfo, WorkbenchConfig, WorkbenchScanItem,
 } from "./types";
 import { buildSubtitle, subtitleCues, SUBTITLE_FORMATS, type SubtitleFormat } from "./utils/subtitle";
-import { formatShort } from "./utils/format";
+import { formatShort, formatDateTime } from "./utils/format";
+import { buildWorkbenchRows, EXPORT_STATE_LABEL, type WorkbenchRow } from "./utils/workbench";
 import { isSupported, MAX_UPLOAD_MB } from "./utils/fileTypes";
 import { addImportItems, reconcileReceipts, type ImportItem } from "./utils/importSession";
 import {
@@ -22,8 +25,9 @@ import {
   type ExportCandidate, type LoadedExport,
 } from "./utils/exportPlan";
 import { loadPreferences, savePreferences, type WorkspacePreferences } from "./utils/preferences";
+import { isApiError } from "./types";
 
-type View = "library" | "tasks" | "reader";
+type View = "library" | "tasks" | "reader" | "workbench";
 type Filter = ResultFilter;
 type Origin = {
   view: "library" | "tasks";
@@ -323,6 +327,20 @@ export default function Workspace() {
   const scrollSaveTimer = useRef<number | null>(null);
   const [manualInvalidate, setManualInvalidate] = useState(0);
 
+  // ---- workbench mode (folder-driven batch pipeline) --------------------
+  const [wbConfig, setWbConfig] = useState<WorkbenchConfig | null>(null);
+  const [wbRootInput, setWbRootInput] = useState("");
+  const [wbExportInput, setWbExportInput] = useState("");
+  const [wbScanRoot, setWbScanRoot] = useState("");
+  const [wbScan, setWbScan] = useState<WorkbenchScanItem[]>([]);
+  const [wbTruncated, setWbTruncated] = useState(false);
+  const [wbSelected, setWbSelected] = useState<Set<string>>(new Set());
+  const [wbBatchName, setWbBatchName] = useState("");
+  const [wbAlign, setWbAlign] = useState(false);
+  const [wbBusy, setWbBusy] = useState(false);
+  const [wbError, setWbError] = useState("");
+  const [wbRecords, setWbRecords] = useState<Map<string, HistoryItem>>(new Map());
+
   const notify = useCallback((message: string) => {
     setToast(message);
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
@@ -603,7 +621,8 @@ export default function Workspace() {
   const pushNav = useCallback((next: Nav, replace = false) => {
     const hash = next.view === "reader" && next.recordId
       ? "#reader/" + next.recordId
-      : next.view === "tasks" ? "#tasks/" + (next.batchId || "") : "#library";
+      : next.view === "tasks" ? "#tasks/" + (next.batchId || "")
+      : next.view === "workbench" ? "#workbench" : "#library";
     const state = { workspace: true, nav: next };
     const url = window.location.pathname + window.location.search + hash;
     if (replace) window.history.replaceState(state, "", url); else window.history.pushState(state, "", url);
@@ -620,6 +639,101 @@ export default function Workspace() {
   function setFilter(filter: Filter) {
     setSelectedResults(new Set()); setSelectedResultData(new Map());
     pushNav({ ...nav, filter }, true);
+  }
+
+  // ---- workbench handlers ------------------------------------------------
+  const loadWbConfig = useCallback(async () => {
+    const cfg = await fetchWorkbenchConfig();
+    setWbConfig(cfg);
+    setWbExportInput(cfg.export_root || "");
+    setWbScanRoot((current) => current || cfg.roots[0]?.id || "");
+  }, []);
+  const refreshWbRecords = useCallback(async () => {
+    const { items } = await fetchHistory();
+    setWbRecords(new Map(items.map((it) => [it.id, it])));
+  }, []);
+  useEffect(() => {
+    if (nav.view !== "workbench") return;
+    void loadWbConfig();
+    void refreshWbRecords();
+  }, [nav.view, queueState?.version, loadWbConfig, refreshWbRecords]);
+  const wbRows = useMemo(() => buildWorkbenchRows(queueItems, wbRecords), [queueItems, wbRecords]);
+
+  async function wbAddRoot() {
+    const path = wbRootInput.trim();
+    if (!path) return;
+    setWbBusy(true); setWbError("");
+    const res = await addWorkbenchRoot(path);
+    setWbBusy(false);
+    if (isApiError(res)) {
+      setWbError(res.error === "not_a_directory" ? "路径不存在或不是文件夹"
+        : res.error === "duplicate_root" ? "该文件夹已批准" : statusMessage(res.error));
+      return;
+    }
+    setWbRootInput("");
+    await loadWbConfig();
+    notify("已批准文件夹 " + res.root.label);
+  }
+  async function wbRemoveRoot(id: string) {
+    await removeWorkbenchRoot(id);
+    if (wbScanRoot === id) { setWbScanRoot(""); setWbScan([]); setWbSelected(new Set()); }
+    await loadWbConfig();
+  }
+  async function wbDoScan() {
+    if (!wbScanRoot) return;
+    setWbBusy(true); setWbError("");
+    const res = await scanWorkbenchRoot(wbScanRoot);
+    setWbBusy(false);
+    if (isApiError(res)) { setWbError(statusMessage(res.error)); return; }
+    setWbScan(res.items);
+    setWbTruncated(res.truncated);
+    setWbSelected(new Set(res.items.map((it) => it.rel_path)));
+  }
+  async function wbSaveExport() {
+    const res = await updateWorkbenchConfig({ export_root: wbExportInput.trim() || null });
+    if (isApiError(res)) { setWbError("导出目录无效：路径不存在或不是文件夹"); return; }
+    setWbConfig(res);
+    notify("导出设置已保存");
+  }
+  async function wbToggleAuto() {
+    if (!wbConfig) return;
+    const res = await updateWorkbenchConfig({ auto_export: !wbConfig.auto_export });
+    if (!isApiError(res)) setWbConfig(res);
+  }
+  async function wbToggleFormat(fmt: string) {
+    if (!wbConfig) return;
+    const next = wbConfig.formats.includes(fmt)
+      ? wbConfig.formats.filter((f) => f !== fmt)
+      : [...wbConfig.formats, fmt];
+    if (!next.length) { setWbError("至少保留一种导出格式"); return; }
+    const res = await updateWorkbenchConfig({ formats: next });
+    if (!isApiError(res)) setWbConfig(res);
+  }
+  async function wbEnqueue() {
+    if (!wbScanRoot || !wbSelected.size) return;
+    setWbBusy(true); setWbError("");
+    const res = await enqueueReference(wbScanRoot, [...wbSelected], wbAlign, wbBatchName.trim());
+    setWbBusy(false);
+    if (isApiError(res)) { setWbError(statusMessage(res.error)); return; }
+    notify(`已加入 ${res.items.length} 个文件，按顺序转写`);
+    setWbSelected(new Set());
+    setWbBatchName("");
+    void refreshQueue();
+  }
+  async function wbReexport(id: string) {
+    setWbBusy(true); setWbError("");
+    const res = await reexportQueueItem(id);
+    setWbBusy(false);
+    if (isApiError(res)) { setWbError(statusMessage(res.error)); return; }
+    notify("已重新导出");
+    void refreshQueue();
+  }
+  function wbOpenResult(row: WorkbenchRow) {
+    if (!row.historyId) return;
+    pushNav({
+      ...nav, view: "reader", recordId: row.historyId,
+      origin: { view: "library", batchId: null, query: "", filter: "all", resultIds: [row.historyId], readerPosition: null },
+    });
   }
 
   // ---- import (A01: stable client identity, no name/size dedupe) --------
@@ -1269,6 +1383,7 @@ export default function Workspace() {
         <div className="asr-nav-links">
           <button className={nav.view === "tasks" || (nav.view === "reader" && nav.origin?.view === "tasks") ? "selected" : ""} onClick={() => navigate("tasks", activeBatch?.id ?? null)}>任务中心 <span className="asr-count">{queueItems.filter((item) => item.status === "queued" || item.status === "running").length}</span></button>
           <button className={nav.view === "library" || (nav.view === "reader" && nav.origin?.view === "library") ? "selected" : ""} onClick={() => navigate("library", null)}>结果库</button>
+          <button className={nav.view === "workbench" ? "selected" : ""} onClick={() => pushNav({ ...nav, view: "workbench", recordId: null, origin: null })}>工作台</button>
           <button className="asr-nav-panel-toggle" aria-expanded={navPanelOpen} aria-controls="asr-nav-panel" onClick={() => setNavPanelOpen((open) => !open)}>搜索与批次</button>
         </div>
         <div className="asr-nav-runtime"><i className={activeTask ? "is-running" : ""} />{activeTask ? "正在转写 " + activeTask.filename : queueState?.paused ? "当前队列已暂停" : "工作区已就绪"}</div>
@@ -1345,6 +1460,54 @@ export default function Workspace() {
               </div>
               <div className="asr-task-foot"><span>显示 {taskRows.length} / {activeBatch.items.length} 项</span><span>查看排序不会改变处理顺序。</span><button className="asr-text-button" onClick={() => void clearDone()}>移除已完成任务</button></div>
             </>}
+          </section>}
+
+          {nav.view === "workbench" && <section className="asr-wb-page" aria-labelledby="wb-title">
+            <div className="asr-page-heading"><div><h1 id="wb-title" className="asr-display">Workbench</h1><h2>工作台 · 文件夹批处理</h2></div></div>
+            {wbError && <div className="asr-active-strip paused"><div><strong>{wbError}</strong></div><button className="asr-text-button" onClick={() => setWbError("")}>关闭</button></div>}
+            <div className="asr-wb-grid">
+              <div className="asr-wb-panel">
+                <h3>批准的文件夹</h3>
+                <div className="asr-wb-root-add"><input className="asr-wb-input" value={wbRootInput} onChange={(event) => setWbRootInput(event.target.value)} placeholder="文件夹绝对路径，如 E:\meetings" aria-label="文件夹路径" /><button className="asr-button asr-button-small" disabled={wbBusy || !wbRootInput.trim()} onClick={() => void wbAddRoot()}>批准</button></div>
+                {wbConfig?.roots.length ? <ul className="asr-wb-roots">{wbConfig.roots.map((root) => <li key={root.id}><button className={"asr-wb-root " + (wbScanRoot === root.id ? "selected" : "")} title={root.path} onClick={() => { setWbScanRoot(root.id); setWbScan([]); setWbSelected(new Set()); }}>{root.label}</button><button className="asr-text-button" onClick={() => void wbRemoveRoot(root.id)}>移除</button></li>)}</ul> : <p className="asr-empty-inline">还没有批准的文件夹。批准后才能扫描与入队；处理只读源文件，不复制。</p>}
+              </div>
+              <div className="asr-wb-panel">
+                <h3>自动命名导出</h3>
+                <div className="asr-wb-root-add"><input className="asr-wb-input" value={wbExportInput} onChange={(event) => setWbExportInput(event.target.value)} placeholder="导出根目录（留空则不自动导出）" aria-label="导出根目录" /><button className="asr-button asr-button-small" onClick={() => void wbSaveExport()}>保存</button></div>
+                <div className="asr-wb-formats">{SUBTITLE_FORMATS.map((fmt) => <label key={fmt.id} className="asr-check-option"><input type="checkbox" checked={wbConfig?.formats.includes(fmt.id) ?? false} onChange={() => void wbToggleFormat(fmt.id)} />{fmt.label}</label>)}</div>
+                <label className="asr-check-option"><input type="checkbox" checked={wbConfig?.auto_export ?? false} onChange={() => void wbToggleAuto()} />转写完成后自动导出</label>
+                <p className="asr-import-note">写入「导出根目录 / 批次名 / 原文件名.格式」；重名自动加后缀，不覆盖已有文件。</p>
+              </div>
+            </div>
+            <div className="asr-wb-panel">
+              <h3>扫描与顺序转写</h3>
+              <div className="asr-wb-scanbar">
+                <select className="asr-wb-input" value={wbScanRoot} onChange={(event) => { setWbScanRoot(event.target.value); setWbScan([]); setWbSelected(new Set()); }} aria-label="选择文件夹">{(wbConfig?.roots ?? []).map((root) => <option key={root.id} value={root.id}>{root.label}</option>)}</select>
+                <button className="asr-button asr-button-small" disabled={wbBusy || !wbScanRoot} onClick={() => void wbDoScan()}>扫描</button>
+                <input className="asr-wb-input" value={wbBatchName} onChange={(event) => setWbBatchName(event.target.value)} placeholder="批次名（默认文件夹名）" aria-label="批次名" />
+                <label className="asr-check-option"><input type="checkbox" checked={wbAlign} onChange={(event) => setWbAlign(event.target.checked)} />词级对齐</label>
+                <button className="asr-button asr-button-primary asr-button-small" disabled={wbBusy || !wbSelected.size} onClick={() => void wbEnqueue()}>顺序转写所选{wbSelected.size ? ` (${wbSelected.size})` : ""}</button>
+              </div>
+              {wbTruncated && <p className="asr-import-note">文件过多，仅显示前 {wbScan.length} 项；可分批入队。</p>}
+              {wbScan.length > 0 && <div className="asr-wb-scanlist">{wbScan.map((it) => <label key={it.rel_path} className="asr-wb-scanrow"><input type="checkbox" checked={wbSelected.has(it.rel_path)} onChange={() => setWbSelected((current) => { const next = new Set(current); if (next.has(it.rel_path)) next.delete(it.rel_path); else next.add(it.rel_path); return next; })} /><span className="asr-wb-scanpath" title={it.rel_path}>{it.rel_path}</span><span className="asr-file-meta">{(it.size / 1048576).toFixed(1)} MB</span></label>)}</div>}
+            </div>
+            <div className="asr-wb-panel">
+              <h3>批处理结果</h3>
+              <div className="asr-wb-table" role="table" aria-label="工作台结果">
+                <div className="asr-wb-head" role="row"><span role="columnheader">标题</span><span role="columnheader">摘要</span><span role="columnheader">时长</span><span role="columnheader">完成时间</span><span role="columnheader">关键词</span><span role="columnheader">特别内容</span><span role="columnheader">导出</span><span role="columnheader">总结</span></div>
+                {wbRows.map((row) => <div className="asr-wb-row" role="row" key={row.id}>
+                  <span role="cell"><button className="asr-file-title" disabled={!row.historyId} onClick={() => wbOpenResult(row)}>{row.title}</button><small className="asr-file-meta" title={row.sourcePath}>{row.batchName} · {row.sourcePath}</small></span>
+                  <span role="cell" className="asr-wb-muted">—</span>
+                  <span role="cell">{row.duration != null ? durationOf(row.duration) : row.status === "done" ? "—" : "待检测"}</span>
+                  <span role="cell">{row.finishedAt ? formatDateTime(row.finishedAt) : row.error ? statusMessage(row.error) : row.status === "running" ? "处理中" : row.status === "queued" ? "等待" : "—"}</span>
+                  <span role="cell" className="asr-wb-muted">—</span>
+                  <span role="cell" className="asr-wb-muted">—</span>
+                  <span role="cell"><span className={"asr-status-label " + (row.exportState === "failed" ? "error" : row.exportState === "done" ? "running" : "")}><i />{EXPORT_STATE_LABEL[row.exportState]}</span>{row.exportNames.length > 0 && <small className="asr-file-meta" title={row.exportNames.join(", ")}>{row.exportNames.join(", ")}</small>}{(row.exportState === "failed" || row.exportState === "skipped") && row.historyId && <button className="asr-text-button" disabled={wbBusy} onClick={() => void wbReexport(row.id)}>重新导出</button>}</span>
+                  <span role="cell" className="asr-wb-muted" title="总结与解读将在下一阶段接入可选模型">—</span>
+                </div>)}
+                {!wbRows.length && <p className="asr-empty-inline">还没有工作台任务。批准文件夹 → 扫描 → 顺序转写 → 自动导出。</p>}
+              </div>
+            </div>
           </section>}
 
           {nav.view === "reader" && <section className="asr-reader" aria-labelledby="reader-title">
