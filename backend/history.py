@@ -326,6 +326,10 @@ class HistoryStore:
                         "align_used": data.get("align_used", False),
                         "segment_count": data.get("stats", {}).get("segment_count", 0),
                         "audio_cache_name": data.get("audio_cache_name"),
+                        "title": data.get("title"),
+                        "batch_id": data.get("batch_id"),
+                        "batch_name": data.get("batch_name"),
+                        "summary": data.get("summary"),
                     })
                 except Exception as e:
                     logger.warning("Skipping unreadable history %s: %s", p.name, e)
@@ -380,6 +384,9 @@ class HistoryStore:
                         "filename": str(data.get("filename") or ""),
                         "source_path": str(data.get("source_path") or ""),
                         "batch_name": str(data.get("batch_name") or ""),
+                        "summary": str((data.get("summary") or {}).get("summary") or ""),
+                        "keywords": " ".join((data.get("summary") or {}).get("keywords") or []),
+                        "highlights": " ".join((data.get("summary") or {}).get("highlights") or []),
                     }
                     match_fields = [
                         name for name, value in fields.items()
@@ -428,6 +435,7 @@ class HistoryStore:
                         "reader_position": data.get("reader_position"),
                         "playback_position": data.get("playback_position", 0.0),
                         "audio_cache_name": data.get("audio_cache_name"),
+                        "summary": data.get("summary"),
                         "result_version": data.get("result_version", 1),
                         "match_fields": match_fields,
                         "first_match": first_match,
@@ -446,6 +454,26 @@ class HistoryStore:
             "limit": limit,
             "has_more": offset + limit < len(matched),
         }
+
+    def save_summary(self, hid: str, summary: dict) -> dict | None:
+        """Attach a model-generated summary object to a durable record."""
+        try:
+            path = self._path(hid)
+        except ValueError:
+            return None
+        with _lock:
+            if not path.is_file() or path.stat().st_size > MAX_HISTORY_FILE_BYTES:
+                return None
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                data["summary"] = summary
+                tmp = path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(tmp, path)
+                return summary
+            except Exception as e:
+                logger.warning("Could not save summary for %s: %s", hid, e)
+                return None
 
     def update_view(
         self,

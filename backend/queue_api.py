@@ -65,6 +65,7 @@ def init(
     workbench: Any = None,
     auto_export_fn: Callable[..., dict] | None = None,
     read_history_fn: Callable[[str], dict | None] | None = None,
+    maybe_summarize_fn: Callable[[str | None], bool] | None = None,
 ) -> None:
     """Wire the queue to main.py's transcription machinery (DI, no import)."""
     global store, _deps
@@ -90,6 +91,7 @@ def init(
         "workbench": workbench,
         "auto_export_fn": auto_export_fn,
         "read_history_fn": read_history_fn,
+        "maybe_summarize_fn": maybe_summarize_fn,
     }
 
 
@@ -691,6 +693,7 @@ async def queue_item_save(qid: str, req: dict = Body(default={})):
     if intended != "cancelled":
         store.unlink_staged(item)
     _run_auto_export(item, payload, history_id)
+    _maybe_summarize(item)
     logger.info("Queue item %s re-saved as history %s", qid, history_id)
     return {"ok": True, "history_id": history_id, "already_saved": False,
             "persistence_state": "saved"}
@@ -724,6 +727,16 @@ async def queue_item_export(qid: str):
 
 
 # worker
+
+
+def _maybe_summarize(item: dict) -> None:
+    fn = _deps.get("maybe_summarize_fn") if _deps else None
+    if fn is None:
+        return
+    try:
+        fn(item.get("batch_id"))
+    except Exception:
+        logger.exception("Summary completion hook failed for %s", item.get("id"))
 
 
 def _run_auto_export(item: dict, payload: dict, history_id: str | None, *, force: bool = False) -> dict:
@@ -883,6 +896,7 @@ async def process_next_once() -> bool:
                 store.set_persistence(item["id"], state="saved",
                                       history_id=resp["history_id"], attempt_id=attempt_id)
                 _run_auto_export(item, resp, resp["history_id"])
+            _maybe_summarize(item)
             store.set_status(item["id"], "cancelled",
                              history_id=resp.get("history_id"),
                              clear_history=not resp.get("history_id"),
@@ -905,6 +919,7 @@ async def process_next_once() -> bool:
                                   history_id=resp["history_id"], attempt_id=attempt_id)
             store.unlink_staged(item)
             _run_auto_export(item, resp, resp["history_id"])
+            _maybe_summarize(item)
             logger.info("Queue item %s done (history=%s)", item["id"], resp.get("history_id"))
             return True
         if has_payload:

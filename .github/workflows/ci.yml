@@ -47,4 +47,4 @@ jobs:
       - name: Run test suite (SKIP_LLAMA=1)
         env:
           SKIP_LLAMA: "1"
-        run: python -m pytest backend/test_main.py backend/test_repair.py backend/test_repair_review.py backend/test_workbench.py -q
+        run: python -m pytest backend/test_main.py backend/test_repair.py backend/test_repair_review.py backend/test_workbench.py backend/test_summary.py -q

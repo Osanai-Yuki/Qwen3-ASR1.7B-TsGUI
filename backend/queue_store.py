@@ -278,6 +278,8 @@ class QueueStore:
             "export_state": "pending",
             "export_paths": [],
             "export_error": None,
+            "summary_state": "pending",
+            "summary_error": None,
         }
         with self._lock:
             self._state["items"].append(item)
@@ -462,6 +464,18 @@ class QueueStore:
             it["export_state"] = state
             it["export_paths"] = list(paths or [])
             it["export_error"] = error
+            self._save_locked()
+            return True
+
+    def set_summary(self, qid: str, state: str, error: str | None = None) -> bool:
+        if state not in ("pending", "done", "failed", "skipped"):
+            return False
+        with self._lock:
+            it = self._find_locked(qid)
+            if it is None:
+                return False
+            it["summary_state"] = state
+            it["summary_error"] = error
             self._save_locked()
             return True
 
