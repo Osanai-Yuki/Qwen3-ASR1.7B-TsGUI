@@ -6,6 +6,7 @@ import {
   updateHistoryView,
   addWorkbenchRoot, enqueueReference, fetchWorkbenchConfig, reexportQueueItem,
   removeWorkbenchRoot, scanWorkbenchRoot, updateWorkbenchConfig,
+  fetchSummaryState, fetchSummaryModels, startBatchSummary, retryItemSummary,
 } from "./api";
 import { useJobStatus } from "./hooks/useJobStatus";
 import { useQueue } from "./hooks/useQueue";
@@ -14,10 +15,11 @@ import { useHistoryResults, type ResultFilter } from "./hooks/useHistoryResults"
 import type {
   AppLimits, BatchSummary, BatchTask, HealthResponse, HistoryItem, HistoryRecord,
   QueueItem, ReaderPosition, ResultRef, TimingInfo, WorkbenchConfig, WorkbenchScanItem,
+  SummaryPhaseState, SummaryModelInfo,
 } from "./types";
 import { buildSubtitle, subtitleCues, SUBTITLE_FORMATS, type SubtitleFormat } from "./utils/subtitle";
 import { formatShort, formatDateTime } from "./utils/format";
-import { buildWorkbenchRows, EXPORT_STATE_LABEL, type WorkbenchRow } from "./utils/workbench";
+import { buildWorkbenchRows, EXPORT_STATE_LABEL, SUMMARY_STATE_LABEL, type WorkbenchRow } from "./utils/workbench";
 import { isSupported, MAX_UPLOAD_MB } from "./utils/fileTypes";
 import { addImportItems, reconcileReceipts, type ImportItem } from "./utils/importSession";
 import {
@@ -340,6 +342,9 @@ export default function Workspace() {
   const [wbBusy, setWbBusy] = useState(false);
   const [wbError, setWbError] = useState("");
   const [wbRecords, setWbRecords] = useState<Map<string, HistoryItem>>(new Map());
+  const [wbSummary, setWbSummary] = useState<SummaryPhaseState | null>(null);
+  const [wbModels, setWbModels] = useState<SummaryModelInfo[]>([]);
+  const [wbSummaryBatch, setWbSummaryBatch] = useState("");
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -658,6 +663,48 @@ export default function Workspace() {
     void refreshWbRecords();
   }, [nav.view, queueState?.version, loadWbConfig, refreshWbRecords]);
   const wbRows = useMemo(() => buildWorkbenchRows(queueItems, wbRecords), [queueItems, wbRecords]);
+  const wbBatches = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const row of wbRows) if (row.batchId && !seen.has(row.batchId)) seen.set(row.batchId, row.batchName);
+    return [...seen.entries()].map(([id, name]) => ({ id, name }));
+  }, [wbRows]);
+  useEffect(() => {
+    if (nav.view !== "workbench") return;
+    void fetchSummaryModels().then((r) => setWbModels(r.models));
+    const tick = () => {
+      void fetchSummaryState().then(setWbSummary);
+      void refreshWbRecords();
+    };
+    tick();
+    const timer = window.setInterval(tick, 3000);
+    return () => window.clearInterval(timer);
+  }, [nav.view, refreshWbRecords]);
+
+  async function wbToggleSummarize() {
+    if (!wbConfig) return;
+    const res = await updateWorkbenchConfig({ summarize: !wbConfig.summarize });
+    if (!isApiError(res)) setWbConfig(res);
+  }
+  async function wbSelectModel(name: string) {
+    const res = await updateWorkbenchConfig({ summary_model: name || null });
+    if (!isApiError(res)) setWbConfig(res);
+  }
+  async function wbStartBatch() {
+    const batchId = wbSummaryBatch || wbBatches[0]?.id;
+    if (!batchId) return;
+    setWbError("");
+    const res = await startBatchSummary(batchId);
+    if (isApiError(res)) { setWbError(statusMessage(res.error)); return; }
+    notify("已加入总结队列；换模期间转写暂停");
+    void fetchSummaryState().then(setWbSummary);
+  }
+  async function wbRetrySummary(historyId: string) {
+    setWbError("");
+    const res = await retryItemSummary(historyId);
+    if (isApiError(res)) { setWbError(statusMessage(res.error)); return; }
+    notify("已加入单条总结队列");
+    void fetchSummaryState().then(setWbSummary);
+  }
 
   async function wbAddRoot() {
     const path = wbRootInput.trim();
@@ -1477,8 +1524,17 @@ export default function Workspace() {
                 <div className="asr-wb-formats">{SUBTITLE_FORMATS.map((fmt) => <label key={fmt.id} className="asr-check-option"><input type="checkbox" checked={wbConfig?.formats.includes(fmt.id) ?? false} onChange={() => void wbToggleFormat(fmt.id)} />{fmt.label}</label>)}</div>
                 <label className="asr-check-option"><input type="checkbox" checked={wbConfig?.auto_export ?? false} onChange={() => void wbToggleAuto()} />转写完成后自动导出</label>
                 <p className="asr-import-note">写入「导出根目录 / 批次名 / 原文件名.格式」；重名自动加后缀，不覆盖已有文件。</p>
+                <label className="asr-check-option"><input type="checkbox" checked={wbConfig?.summarize ?? false} onChange={() => void wbToggleSummarize()} />批次完成后自动总结</label>
+                <select className="asr-wb-input" value={wbConfig?.summary_model ?? ""} onChange={(event) => void wbSelectModel(event.target.value)} aria-label="总结模型">
+                  <option value="">选择总结模型（models/summary）</option>
+                  {wbModels.map((model) => <option key={model.name} value={model.name}>{model.name}</option>)}
+                </select>
+                <p className="asr-import-note">总结采用批后顺序换模：换入 instruct 模型期间转写暂停（409），完成后自动换回原 ASR 模型。摘要/关键词/特别内容由模型生成，可单条重跑。</p>
               </div>
             </div>
+            {wbSummary && (wbSummary.phase === "swapping_in" || wbSummary.phase === "summarizing" || wbSummary.phase === "swapping_back") && <div className="asr-active-strip"><div><strong>总结阶段 · {wbSummary.phase === "summarizing" ? `正在总结 ${wbSummary.done}/${wbSummary.total}` : wbSummary.phase === "swapping_in" ? "正在换入总结模型" : "正在换回 ASR 模型"}</strong><span>模型 {wbSummary.model} · 期间转写暂停，队列自动等待</span></div></div>}
+            {wbSummary && wbSummary.phase === "failed" && <div className="asr-active-strip paused"><div><strong>总结阶段失败：{statusMessage(wbSummary.error)}</strong><span>{wbSummary.error === "swap_back_failed" ? "ASR 未恢复：请用启动重试恢复模型后再总结" : "可重试本批次总结"}</span></div>{wbSummary.batch_id && wbSummary.error !== "swap_back_failed" && <button className="asr-text-button" onClick={() => void startBatchSummary(wbSummary.batch_id!).then((r) => { if (isApiError(r)) setWbError(statusMessage(r.error)); else void fetchSummaryState().then(setWbSummary); })}>重试总结</button>}</div>}
+            {wbSummary && wbSummary.phase === "interrupted" && <div className="asr-active-strip paused"><div><strong>上次总结被重启中断</strong><span>ASR 已由启动恢复；未完成的条目可单条重总结。</span></div></div>}
             <div className="asr-wb-panel">
               <h3>扫描与顺序转写</h3>
               <div className="asr-wb-scanbar">
@@ -1493,17 +1549,21 @@ export default function Workspace() {
             </div>
             <div className="asr-wb-panel">
               <h3>批处理结果</h3>
+              <div className="asr-wb-scanbar">
+                <select className="asr-wb-input" value={wbSummaryBatch || wbBatches[0]?.id || ""} onChange={(event) => setWbSummaryBatch(event.target.value)} aria-label="选择要总结的批次">{wbBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.name}</option>)}</select>
+                <button className="asr-button asr-button-small" disabled={!wbBatches.length || !wbConfig?.summary_model} onClick={() => void wbStartBatch()}>总结本批次</button>
+              </div>
               <div className="asr-wb-table" role="table" aria-label="工作台结果">
                 <div className="asr-wb-head" role="row"><span role="columnheader">标题</span><span role="columnheader">摘要</span><span role="columnheader">时长</span><span role="columnheader">完成时间</span><span role="columnheader">关键词</span><span role="columnheader">特别内容</span><span role="columnheader">导出</span><span role="columnheader">总结</span></div>
                 {wbRows.map((row) => <div className="asr-wb-row" role="row" key={row.id}>
                   <span role="cell"><button className="asr-file-title" disabled={!row.historyId} onClick={() => wbOpenResult(row)}>{row.title}</button><small className="asr-file-meta" title={row.sourcePath}>{row.batchName} · {row.sourcePath}</small></span>
-                  <span role="cell" className="asr-wb-muted">—</span>
+                  <span role="cell" className="asr-wb-clamp" title={row.summary ?? undefined}>{row.summary ?? "—"}</span>
                   <span role="cell">{row.duration != null ? durationOf(row.duration) : row.status === "done" ? "—" : "待检测"}</span>
                   <span role="cell">{row.finishedAt ? formatDateTime(row.finishedAt) : row.error ? statusMessage(row.error) : row.status === "running" ? "处理中" : row.status === "queued" ? "等待" : "—"}</span>
-                  <span role="cell" className="asr-wb-muted">—</span>
-                  <span role="cell" className="asr-wb-muted">—</span>
+                  <span role="cell" className="asr-wb-clamp" title={row.keywords.join("、") || undefined}>{row.keywords.join("、") || "—"}</span>
+                  <span role="cell" className="asr-wb-clamp" title={row.highlights.join("；") || undefined}>{row.highlights.join("；") || "—"}</span>
                   <span role="cell"><span className={"asr-status-label " + (row.exportState === "failed" ? "error" : row.exportState === "done" ? "running" : "")}><i />{EXPORT_STATE_LABEL[row.exportState]}</span>{row.exportNames.length > 0 && <small className="asr-file-meta" title={row.exportNames.join(", ")}>{row.exportNames.join(", ")}</small>}{(row.exportState === "failed" || row.exportState === "skipped") && row.historyId && <button className="asr-text-button" disabled={wbBusy} onClick={() => void wbReexport(row.id)}>重新导出</button>}</span>
-                  <span role="cell" className="asr-wb-muted" title="总结与解读将在下一阶段接入可选模型">—</span>
+                  <span role="cell"><span className={"asr-status-label " + (row.summaryState === "failed" ? "error" : row.summaryState === "done" ? "running" : "")}><i />{SUMMARY_STATE_LABEL[row.summaryState]}</span>{row.summaryError && <small className="asr-file-meta">{statusMessage(row.summaryError)}</small>}{row.historyId && <button className="asr-text-button" disabled={!wbConfig?.summary_model} onClick={() => void wbRetrySummary(row.historyId!)}>重总结</button>}</span>
                 </div>)}
                 {!wbRows.length && <p className="asr-empty-inline">还没有工作台任务。批准文件夹 → 扫描 → 顺序转写 → 自动导出。</p>}
               </div>

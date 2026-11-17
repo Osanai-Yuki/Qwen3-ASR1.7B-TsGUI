@@ -28,6 +28,8 @@ import type {
   WorkbenchConfig,
   WorkbenchRoot,
   WorkbenchScanResponse,
+  SummaryPhaseState,
+  SummaryModelInfo,
 } from "./types";
 
 /** PATCH /api/history/{hid}/view response. */
@@ -368,4 +370,32 @@ export async function reexportQueueItem(
 ): Promise<{ ok: boolean; state: string; paths: { format: string; path: string; name: string }[] } | ApiError> {
   const res = await fetch(`/api/queue/items/${encodeURIComponent(id)}/export`, { method: "POST" });
   return (await res.json()) as { ok: boolean; state: string; paths: { format: string; path: string; name: string }[] } | ApiError;
+}
+
+/* Workbench summarization phase (backend/summary.py) */
+
+export function fetchSummaryState(): Promise<SummaryPhaseState> {
+  return getJson<SummaryPhaseState>("/api/workbench/summary-state");
+}
+
+export function fetchSummaryModels(): Promise<{ models: SummaryModelInfo[] }> {
+  return getJson<{ models: SummaryModelInfo[] }>("/api/workbench/summary-models");
+}
+
+export async function startBatchSummary(batchId: string): Promise<{ ok: boolean; queued: boolean } | ApiError> {
+  const res = await fetch("/api/workbench/summarize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ batch_id: batchId }),
+  });
+  return (await res.json()) as { ok: boolean; queued: boolean } | ApiError;
+}
+
+export async function retryItemSummary(historyId: string): Promise<{ ok: boolean; queued: boolean } | ApiError> {
+  const res = await fetch("/api/workbench/summarize-item", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ history_id: historyId }),
+  });
+  return (await res.json()) as { ok: boolean; queued: boolean } | ApiError;
 }

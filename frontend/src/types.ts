@@ -169,6 +169,7 @@ export interface HistoryItem {
   reader_position?: ReaderPosition | null;
   playback_position?: number;
   timing?: TimingInfo | null;
+  summary?: WorkbenchSummary | null;
   match_fields?: string[];
   first_match?: { field: string; offset: number | null } | null;
   snippet?: string;
@@ -321,6 +322,8 @@ export interface QueueItem {
   export_state?: "pending" | "done" | "failed" | "skipped";
   export_paths?: { format: string; path: string; name: string }[];
   export_error?: string | null;
+  summary_state?: "pending" | "done" | "failed" | "skipped";
+  summary_error?: string | null;
 }
 
 /** GET /api/queue/items/{qid}/result — a saved result points at history; a
@@ -430,4 +433,28 @@ export interface WorkbenchScanItem {
 export interface WorkbenchScanResponse {
   items: WorkbenchScanItem[];
   truncated: boolean;
+}
+
+export interface WorkbenchSummary {
+  title: string;
+  summary: string;
+  keywords: string[];
+  highlights: string[];
+  model: string;
+  generated_at: string;
+  state: "done" | "failed";
+}
+
+export interface SummaryPhaseState {
+  phase: "idle" | "swapping_in" | "summarizing" | "swapping_back" | "finished" | "failed" | "interrupted";
+  batch_id: string | null;
+  done: number;
+  total: number;
+  model: string | null;
+  error: string | null;
+}
+
+export interface SummaryModelInfo {
+  name: string;
+  size: number;
 }
