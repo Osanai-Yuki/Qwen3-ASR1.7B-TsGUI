@@ -746,6 +746,7 @@ def _warmup_asr():
             data={"response_format": "json"},
             headers=_LLAMA_HEADERS,
             timeout=60.0,
+            trust_env=False,
         )
         if r.status_code == 200:
             logger.info("ASR warmup OK")

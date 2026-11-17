@@ -194,7 +194,7 @@ class LlamaRunner:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                r = httpx.get(f"{self.base_url}/health", timeout=2.0, headers=auth)
+                r = httpx.get(f"{self.base_url}/health", timeout=2.0, headers=auth, trust_env=False)
                 if r.status_code == 200:
                     return
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
@@ -218,7 +218,7 @@ class LlamaRunner:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                httpx.get(f"{self.base_url}/health", timeout=0.5)
+                httpx.get(f"{self.base_url}/health", timeout=0.5, trust_env=False)
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
                 return  # port is free
             time.sleep(0.3)
