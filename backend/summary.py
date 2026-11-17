@@ -154,30 +154,33 @@ def parse_summary(raw: str) -> dict:
     }
 
 
-def build_prompt(text: str, title: str) -> list[dict]:
+DEFAULT_SYSTEM_PROMPT = (
+    "你是本地会议纪要整理助手。只输出一个 JSON 对象，不要输出任何其他文字。"
+    '字段：title（不超过30字的标题）、summary（150字以内的中文摘要）、'
+    'keywords（3-8个关键词字符串数组）、highlights（特别内容：决议、待办、'
+    '人名、关键数字等，字符串数组，最多6条）。无法确定的内容不要编造。'
+)
+
+
+def build_prompt(text: str, title: str, system_prompt: str | None = None) -> list[dict]:
     transcript = (text or "").strip()
     truncated = len(transcript) > MAX_TRANSCRIPT_CHARS
     body = transcript[:MAX_TRANSCRIPT_CHARS]
     if truncated:
         body += "\n（转写过长，以上为前段节选）"
     return [
-        {"role": "system", "content": (
-            "你是本地会议纪要整理助手。只输出一个 JSON 对象，不要输出任何其他文字。"
-            '字段：title（不超过30字的标题）、summary（150字以内的中文摘要）、'
-            'keywords（3-8个关键词字符串数组）、highlights（特别内容：决议、待办、'
-            '人名、关键数字等，字符串数组，最多6条）。无法确定的内容不要编造。'
-        )},
+        {"role": "system", "content": system_prompt or DEFAULT_SYSTEM_PROMPT},
         {"role": "user", "content": f"原标题：{title or '无'}\n转写全文：\n{body}"},
     ]
 
 
-async def _llm_call(text: str, title: str) -> str:
+async def _llm_call(text: str, title: str, system_prompt: str | None = None) -> str:
     import httpx
     assert _deps is not None
     async with httpx.AsyncClient(timeout=180.0, trust_env=False) as client:
         resp = await client.post(
             f"{_deps['base_url_fn']()}/v1/chat/completions",
-            json={"messages": build_prompt(text, title), "temperature": 0.2,
+            json={"messages": build_prompt(text, title, system_prompt), "temperature": 0.2,
                   "max_tokens": 1024, "stream": False},
         )
     if resp.status_code != 200:
@@ -193,6 +196,8 @@ def _targets(run: dict) -> list[dict]:
         return [item] if item and item.get("history_id") == run["only"] else []
     items = _deps["list_batch_items_fn"](run["batch_id"]) or []
     durable = [it for it in items if it.get("history_id")]
+    if run.get("force"):
+        return durable
     return [it for it in durable if (it.get("summary_state") or "pending") in ("pending", "failed")]
 
 
@@ -211,7 +216,7 @@ def maybe_start_batch(batch_id: str | None) -> bool:
     return _enqueue_run({"batch_id": batch_id, "only": None})
 
 
-def start_batch(batch_id: str) -> tuple[bool, str | None]:
+def start_batch(batch_id: str, force: bool = False) -> tuple[bool, str | None]:
     assert _deps is not None
     cfg = _deps["config_fn"]()
     if not cfg.get("summary_model"):
@@ -219,7 +224,7 @@ def start_batch(batch_id: str) -> tuple[bool, str | None]:
     items = _deps["list_batch_items_fn"](batch_id) or []
     if not any(it.get("history_id") for it in items):
         return False, "no_durable_results"
-    return _enqueue_run({"batch_id": batch_id, "only": None}), None
+    return _enqueue_run({"batch_id": batch_id, "only": None, "force": force}), None
 
 
 def retry_item(history_id: str) -> tuple[bool, str | None]:
@@ -285,8 +290,9 @@ async def _run_one(run: dict) -> None:
         return
     _deps["set_gate_fn"](True)
     _set_phase(phase="summarizing")
+    system_prompt = cfg.get("summary_prompt")
     for item in targets:
-        await _summarize_one(item, model)
+        await _summarize_one(item, model, system_prompt)
         with _lock:
             _phase["done"] += 1
         _persist()
@@ -307,7 +313,7 @@ async def _restore_asr() -> bool:
         return False
 
 
-async def _summarize_one(item: dict, model: str) -> None:
+async def _summarize_one(item: dict, model: str, system_prompt: str | None = None) -> None:
     assert _deps is not None
     hid = item["history_id"]
     record = _deps["read_history_fn"](hid)
@@ -315,7 +321,7 @@ async def _summarize_one(item: dict, model: str) -> None:
         _deps["set_item_summary_fn"](item["id"], "failed", "history_gone")
         return
     try:
-        raw = await _deps["llm_call_fn"](record.get("text") or "", record.get("title") or "")
+        raw = await _deps["llm_call_fn"](record.get("text") or "", record.get("title") or "", system_prompt)
         parsed = parse_summary(raw)
     except ValueError as e:
         _deps["set_item_summary_fn"](item["id"], "failed", str(e) or "summary_parse")
@@ -355,7 +361,7 @@ async def summarize_batch(req: dict = Body(default={})):
     batch_id = str(req.get("batch_id") or "")
     if not batch_id:
         return JSONResponse({"error": "bad_request", "detail": "batch_id is required"}, status_code=422)
-    ok, error = start_batch(batch_id)
+    ok, error = start_batch(batch_id, force=bool(req.get("force", False)))
     if not ok:
         status = 422 if error == "summary_model_unset" else 409
         return JSONResponse({"error": error}, status_code=status)

@@ -726,6 +726,33 @@ async def queue_item_export(qid: str):
     return {"ok": True, **outcome}
 
 
+@router.post("/api/queue/reexport-batch")
+async def queue_reexport_batch(req: dict = Body(default={})):
+    """Force re-export of every durable result in a batch."""
+    assert store is not None and _deps is not None
+    batch_id = str(req.get("batch_id") or "")
+    if not batch_id:
+        return JSONResponse({"error": "bad_request", "detail": "batch_id is required"}, status_code=422)
+    read_fn = _deps.get("read_history_fn")
+    if read_fn is None:
+        return JSONResponse({"error": "unavailable", "detail": "history reading is not configured"}, status_code=503)
+    items = [it for it in store.snapshot()["items"]
+             if it.get("batch_id") == batch_id and it.get("history_id")]
+    if not items:
+        return JSONResponse({"error": "no_durable_results"}, status_code=409)
+    counts = {"done": 0, "failed": 0, "skipped": 0}
+    for item in items:
+        record = await asyncio.to_thread(read_fn, item["history_id"])
+        if record is None:
+            store.set_export(item["id"], "failed", error="history_gone")
+            counts["failed"] += 1
+            continue
+        outcome = _run_auto_export(item, record, item["history_id"], force=True)
+        state = outcome.get("state", "failed")
+        counts[state] = counts.get(state, 0) + 1
+    return {"ok": True, **counts}
+
+
 # worker
 
 

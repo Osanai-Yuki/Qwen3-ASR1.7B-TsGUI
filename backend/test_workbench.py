@@ -249,6 +249,51 @@ def test_reference_escape_and_type_rejected(bench, tmp_path):
     assert r.status_code == 404
 
 
+def test_name_template_validation_and_render(bench, tmp_path):
+    from datetime import datetime
+    assert bench.update_config({"export_name_template": "{foo}"}) == "invalid_name_template"
+    assert bench.update_config({"export_name_template": "no-placeholder"}) == "invalid_name_template"
+    assert bench.update_config({"export_name_template": "x" * 121}) == "invalid_name_template"
+    assert bench.update_config({"export_name_template": "{stem}_{date}_{model}"}) is None
+    now = datetime(2026, 11, 17, 14, 5)
+    name = wb.render_export_name("{stem}_{date}_{time}_{model}_{batch}_{id}",
+                                 stem="a", identity="abcd1234efgh", batch_name="b:c",
+                                 model="Qwen3-ASR-1.7B-Q8_0", now=now)
+    assert name == "a_20261117_1405_Qwen3-ASR-1.7B-Q8_0_b_c_abcd1234"
+    assert wb.render_export_name("{stem}", stem="a", identity="x", batch_name=None,
+                                 model=None, now=now) == "a"
+
+
+def test_write_exports_with_template(bench, tmp_path):
+    out = tmp_path / "exports"
+    args = dict(text="hi", segments=[{"start": 0, "end": 1, "text": "hi"}], stats={},
+                filename="a.wav", export_root=str(out), batch_name="batch",
+                formats=["srt"], name_template="{stem}_{id}")
+    first = wb.write_exports(identity="aaaabbbb1111", **args)
+    assert first[0]["name"] == "a_aaaabbbb.srt"
+    second = wb.write_exports(identity="aaaabbbb2222", **args)
+    assert second[0]["name"] == "a_aaaabbbb__aaaabbbb.srt"
+
+
+def test_reexport_batch_endpoint(bench, tmp_path, monkeypatch):
+    item, root = _root_with_wav(tmp_path, bench)
+    bench.update_config({"export_root": str(tmp_path / "exports"),
+                         "export_name_template": "{stem}_{date}"})
+    client = make_client(tmp_path=tmp_path)
+    r = client.post("/api/queue/reference", json={"root_id": item["id"], "rel_paths": ["a.wav"]})
+    batch_id = r.json()["batch_id"]
+    qid = r.json()["items"][0]["id"]
+    _mock_pipeline(monkeypatch, root / "a.wav")
+    asyncio.run(qapi.process_next_once())
+    for p in (tmp_path / "exports").rglob("a_*"):
+        p.unlink()
+    r = client.post("/api/queue/reexport-batch", json={"batch_id": batch_id})
+    assert r.status_code == 200 and r.json()["done"] == 1
+    names = [p.name for p in (tmp_path / "exports").rglob("*.srt")]
+    assert names and names[0].startswith("a_20")
+    assert client.post("/api/queue/reexport-batch", json={"batch_id": "000000000000"}).status_code == 409
+
+
 def test_reexport_endpoint(bench, tmp_path, monkeypatch):
     item, root = _root_with_wav(tmp_path, bench)
     bench.update_config({"export_root": str(tmp_path / "exports")})
