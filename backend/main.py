@@ -41,6 +41,7 @@ from .resegment import resegment_words
 from .text_clean import clean_asr_text, clean_segments, seam_overlap
 from .history import HistoryStore, derive_timing_info
 from . import queue_api
+from . import workbench
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("asr")
@@ -2135,10 +2136,15 @@ queue_api.init(
     reserve_version_fn=lambda task_id: history_store.reserve_version(task_id),
     save_result_fn=lambda payload: _save_result_payload(payload),
     find_history_by_attempt_fn=lambda attempt: history_store.find_by_attempt(attempt),
+    workbench=workbench,
+    auto_export_fn=workbench.auto_export,
+    read_history_fn=lambda hid: history_store.get(hid),
 )
 # Repair any association lost between "history committed" and "queue updated".
 queue_api.reconcile_attempts()
 app.include_router(queue_api.router)
+workbench.init(data_dir=DATA_DIR, allowed_suffixes=_ALLOWED_UPLOAD_SUFFIXES)
+app.include_router(workbench.router)
 
 if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

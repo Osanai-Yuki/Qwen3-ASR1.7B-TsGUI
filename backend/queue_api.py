@@ -62,6 +62,9 @@ def init(
     reserve_version_fn: Callable[[str], int] | None = None,
     save_result_fn: Callable[[dict], dict] | None = None,
     find_history_by_attempt_fn: Callable[[str], str | None] | None = None,
+    workbench: Any = None,
+    auto_export_fn: Callable[..., dict] | None = None,
+    read_history_fn: Callable[[str], dict | None] | None = None,
 ) -> None:
     """Wire the queue to main.py's transcription machinery (DI, no import)."""
     global store, _deps
@@ -84,6 +87,9 @@ def init(
         "reserve_version_fn": reserve_version_fn,
         "save_result_fn": save_result_fn,
         "find_history_by_attempt_fn": find_history_by_attempt_fn,
+        "workbench": workbench,
+        "auto_export_fn": auto_export_fn,
+        "read_history_fn": read_history_fn,
     }
 
 
@@ -340,6 +346,63 @@ async def queue_add(
     return {"items": added}
 
 
+@router.post("/api/queue/reference")
+async def queue_add_reference(req: dict = Body(default={})):
+    """Enqueue files in place from an approved workbench root (no staging copy).
+
+    Every relative path is containment-validated against the root at enqueue
+    time AND again at execution time, so a root removed or a file moved between
+    the two can never read outside the approved tree.
+    """
+    assert store is not None and _deps is not None
+    workbench = _deps.get("workbench")
+    if workbench is None:
+        return JSONResponse({"error": "unavailable", "detail": "workbench is not configured"}, status_code=503)
+    root_id = str(req.get("root_id") or "")
+    root = workbench.get_root(root_id)
+    if root is None:
+        return JSONResponse({"error": "unknown_root"}, status_code=404)
+    rel_paths = req.get("rel_paths")
+    if not isinstance(rel_paths, list) or not rel_paths or not all(isinstance(p, str) for p in rel_paths):
+        return JSONResponse({"error": "bad_request", "detail": "rel_paths must be a non-empty string array"}, status_code=422)
+    if store.pending_count() + len(rel_paths) > QUEUE_MAX_ENTRIES:
+        return JSONResponse({"error": "queue_full", "detail": f"queue entry limit is {QUEUE_MAX_ENTRIES}"}, status_code=422)
+    resolved: list[tuple[str, Path]] = []
+    for rel in rel_paths:
+        try:
+            target = workbench.resolve_source(root_id, rel)
+        except ValueError:
+            return JSONResponse({"error": "invalid_source_path", "detail": f"path escapes the approved root: {rel[:120]}"}, status_code=422)
+        if target.suffix.lower() not in _deps["allowed_suffixes"]:
+            return JSONResponse({"error": "unsupported_type", "detail": f"unsupported file type: {target.name}"}, status_code=422)
+        if not target.is_file():
+            return JSONResponse({"error": "source_gone", "detail": f"no such file: {rel[:120]}"}, status_code=410)
+        size = target.stat().st_size
+        if size > _deps["max_upload_bytes"]:
+            return JSONResponse({"error": "payload_too_large", "detail": f"{target.name} exceeds {_deps['max_upload_bytes']} bytes"}, status_code=413)
+        resolved.append((rel, target))
+    batch_id = store.new_id()
+    batch_name = " ".join(str(req.get("batch_name") or "").split())[:120] or root["label"]
+    align = bool(req.get("align", False))
+    added: list[dict] = []
+    for rel, target in resolved:
+        qid = store.new_id()
+        added.append(store.add(
+            qid=qid,
+            filename=_deps["safe_filename"](target.name),
+            staged_name=None,
+            size=target.stat().st_size,
+            align=align,
+            batch_id=batch_id,
+            batch_name=batch_name,
+            source_path=rel,
+            source_mode="reference",
+            root_id=root_id,
+        ))
+    logger.info("Queue: enqueued %d reference item(s) from root %s", len(added), root_id)
+    return {"items": added, "batch_id": batch_id}
+
+
 @router.get("/api/queue")
 async def queue_state():
     assert store is not None
@@ -421,7 +484,20 @@ async def queue_retry(qid: str):
             {"error": "bad_request", "detail": "only failed/cancelled items can be retried"},
             status_code=409,
         )
-    if not store.staged_path(item).is_file():
+    if item.get("source_mode") == "reference":
+        workbench = _deps.get("workbench")
+        source = None
+        if workbench is not None:
+            try:
+                source = workbench.resolve_source(item.get("root_id") or "", item.get("source_path") or "")
+            except ValueError:
+                source = None
+        if source is None or not source.is_file():
+            return JSONResponse(
+                {"error": "source_gone", "detail": "source file no longer exists under the approved root"},
+                status_code=410,
+            )
+    elif not store.staged_path(item).is_file():
         return JSONResponse(
             {"error": "gone", "detail": "staged file no longer exists; re-enqueue it"},
             status_code=410,
@@ -614,12 +690,59 @@ async def queue_item_save(qid: str, req: dict = Body(default={})):
     # task keeps its original file so it can still be re-processed from scratch.
     if intended != "cancelled":
         store.unlink_staged(item)
+    _run_auto_export(item, payload, history_id)
     logger.info("Queue item %s re-saved as history %s", qid, history_id)
     return {"ok": True, "history_id": history_id, "already_saved": False,
             "persistence_state": "saved"}
 
 
+@router.post("/api/queue/items/{qid}/export")
+async def queue_item_export(qid: str):
+    """Re-export a durable result on demand (auto-export failed or was off)."""
+    assert store is not None and _deps is not None
+    item = store.get(qid)
+    if item is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    history_id = item.get("history_id")
+    if not history_id:
+        return JSONResponse(
+            {"error": "no_durable_result", "detail": "save the result before exporting it"},
+            status_code=409,
+        )
+    read_fn = _deps.get("read_history_fn")
+    if read_fn is None:
+        return JSONResponse({"error": "unavailable", "detail": "history reading is not configured"}, status_code=503)
+    record = await asyncio.to_thread(read_fn, history_id)
+    if record is None:
+        return JSONResponse({"error": "history_gone", "detail": "the history record no longer exists"}, status_code=410)
+    outcome = _run_auto_export(item, record, history_id, force=True)
+    if outcome.get("error") == "export_root_unset":
+        return JSONResponse({"error": "export_root_unset", "detail": "set an export folder in workbench settings first"}, status_code=422)
+    if outcome.get("state") == "failed":
+        return JSONResponse({"error": outcome.get("error") or "export_failed"}, status_code=500)
+    return {"ok": True, **outcome}
+
+
 # worker
+
+
+def _run_auto_export(item: dict, payload: dict, history_id: str | None, *, force: bool = False) -> dict:
+    """Export a durable result and record the outcome on the queue item.
+
+    Never raises: an export problem must not undo a committed transcription.
+    """
+    fn = _deps.get("auto_export_fn") if _deps else None
+    if fn is None:
+        return {"state": "skipped", "paths": [], "error": None}
+    try:
+        outcome = fn(item, payload, history_id, force=force)
+    except Exception:
+        logger.exception("Auto-export hook failed for %s", item.get("id"))
+        outcome = {"state": "failed", "paths": [], "error": "export_failed"}
+    assert store is not None
+    store.set_export(item["id"], outcome.get("state", "failed"),
+                     paths=outcome.get("paths"), error=outcome.get("error"))
+    return outcome
 
 
 async def process_next_once() -> bool:
@@ -635,14 +758,29 @@ async def process_next_once() -> bool:
     if item is None:
         return False
 
-    try:
-        staged = store.staged_path(item)
-    except ValueError:
-        store.set_status(item["id"], "error", error="invalid_staged_name")
-        return True
-    if not staged.is_file():
-        store.set_status(item["id"], "error", error="staged_file_missing")
-        return True
+    if item.get("source_mode") == "reference":
+        workbench = _deps.get("workbench")
+        if workbench is None:
+            store.set_status(item["id"], "error", error="workbench_unavailable")
+            return True
+        try:
+            media = workbench.resolve_source(item.get("root_id") or "", item.get("source_path") or "")
+        except ValueError as e:
+            code = "root_unavailable" if str(e) == "unknown_root" else "invalid_source_path"
+            store.set_status(item["id"], "error", error=code)
+            return True
+        if not media.is_file():
+            store.set_status(item["id"], "error", error="source_gone")
+            return True
+    else:
+        try:
+            media = store.staged_path(item)
+        except ValueError:
+            store.set_status(item["id"], "error", error="invalid_staged_name")
+            return True
+        if not media.is_file():
+            store.set_status(item["id"], "error", error="staged_file_missing")
+            return True
 
     # Mark running before the call so GET /api/queue exposes active_id;
     # a lost race against a manual upload is undone right below (409).
@@ -675,7 +813,7 @@ async def process_next_once() -> bool:
     # later manual transcription.
     _deps["set_job_owner"](item["id"])
     try:
-        with staged.open("rb") as fh:
+        with media.open("rb") as fh:
             metadata = json.dumps({
                 "batch_id": item.get("batch_id"),
                 "batch_name": item.get("batch_name"),
@@ -690,7 +828,7 @@ async def process_next_once() -> bool:
             upload = UploadFile(
                 file=fh,
                 filename=item["filename"],
-                size=staged.stat().st_size,
+                size=media.stat().st_size,
                 headers=Headers({"x-asr-task-meta": encoded_metadata}),
             )
             resp = await _deps["transcribe_fn"](file=upload, align=bool(item["align"]))
@@ -744,6 +882,7 @@ async def process_next_once() -> bool:
             elif resp.get("history_id"):
                 store.set_persistence(item["id"], state="saved",
                                       history_id=resp["history_id"], attempt_id=attempt_id)
+                _run_auto_export(item, resp, resp["history_id"])
             store.set_status(item["id"], "cancelled",
                              history_id=resp.get("history_id"),
                              clear_history=not resp.get("history_id"),
@@ -765,6 +904,7 @@ async def process_next_once() -> bool:
             store.set_persistence(item["id"], state="saved",
                                   history_id=resp["history_id"], attempt_id=attempt_id)
             store.unlink_staged(item)
+            _run_auto_export(item, resp, resp["history_id"])
             logger.info("Queue item %s done (history=%s)", item["id"], resp.get("history_id"))
             return True
         if has_payload:
