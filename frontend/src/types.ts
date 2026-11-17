@@ -422,6 +422,8 @@ export interface WorkbenchConfig {
   auto_export: boolean;
   summarize: boolean;
   summary_model: string | null;
+  export_name_template: string;
+  summary_prompt: string | null;
 }
 
 export interface WorkbenchScanItem {

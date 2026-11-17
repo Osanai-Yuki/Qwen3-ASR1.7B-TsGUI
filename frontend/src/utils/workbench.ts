@@ -43,6 +43,31 @@ export const SUMMARY_STATE_LABEL: Record<WorkbenchSummaryState, string> = {
   skipped: "未启用",
 };
 
+export const NAME_PLACEHOLDERS = ["stem", "date", "time", "model", "batch", "id"] as const;
+
+export interface NameParts {
+  stem: string;
+  date: string;
+  time: string;
+  model: string;
+  batch: string;
+  id: string;
+}
+
+const ILLEGAL_NAME_CHARS = new RegExp("[\\x00-\\x1f\\x7f<>:\"/\\\\|?*]", "g");
+
+/** Mirror of backend render_export_name for the live template preview. */
+export function renderNamePreview(template: string, parts: NameParts): string {
+  const rendered = template.replace(/\{([a-z_]*)\}/g, (whole, key: string) =>
+    key in parts ? String(parts[key as keyof NameParts]) : whole);
+  const cleaned = rendered
+    .replace(ILLEGAL_NAME_CHARS, "_")
+    .replace(/^\.+/, "")
+    .trim()
+    .slice(0, 120);
+  return cleaned || parts.stem;
+}
+
 export function buildWorkbenchRows(
   items: QueueItem[],
   records: Map<string, HistoryItem>,
