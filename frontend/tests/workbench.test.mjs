@@ -1,7 +1,7 @@
 // Workbench table row derivation checks.
 // Run: node --experimental-strip-types tests/workbench.test.mjs
 import assert from "node:assert/strict";
-import { buildWorkbenchRows, EXPORT_STATE_LABEL, SUMMARY_STATE_LABEL } from "../src/utils/workbench.ts";
+import { buildWorkbenchRows, EXPORT_STATE_LABEL, SUMMARY_STATE_LABEL, renderNamePreview } from "../src/utils/workbench.ts";
 
 const base = {
   size: 10,
@@ -61,5 +61,12 @@ assert.equal(EXPORT_STATE_LABEL[rows[1].exportState], "已导出");
 assert.equal(SUMMARY_STATE_LABEL[rows[0].summaryState], "总结失败");
 assert.equal(Object.keys(EXPORT_STATE_LABEL).length, 4);
 assert.equal(Object.keys(SUMMARY_STATE_LABEL).length, 4);
+
+const parts = { stem: "a", date: "20261117", time: "1405", model: "Qwen3-ASR-1.7B-Q8_0", batch: "b:c", id: "abcd1234" };
+assert.equal(renderNamePreview("{stem}_{date}_{time}_{model}_{batch}_{id}", parts), "a_20261117_1405_Qwen3-ASR-1.7B-Q8_0_b_c_abcd1234");
+assert.equal(renderNamePreview("{stem}", parts), "a");
+assert.equal(renderNamePreview("{unknown}_{stem}", parts), "{unknown}_a");
+assert.equal(renderNamePreview("../{stem}", parts), "_a");
+assert.equal(renderNamePreview("", parts), "a");
 
 console.log("workbench row checks passed");

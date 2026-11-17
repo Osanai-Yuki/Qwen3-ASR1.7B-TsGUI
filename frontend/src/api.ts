@@ -319,7 +319,7 @@ export function fetchWorkbenchConfig(): Promise<WorkbenchConfig> {
 }
 
 export async function updateWorkbenchConfig(
-  patch: Partial<Pick<WorkbenchConfig, "export_root" | "formats" | "auto_export" | "summarize" | "summary_model">>,
+  patch: Partial<Pick<WorkbenchConfig, "export_root" | "formats" | "auto_export" | "summarize" | "summary_model" | "export_name_template" | "summary_prompt">>,
 ): Promise<WorkbenchConfig | ApiError> {
   const res = await fetch("/api/workbench/config", {
     method: "PUT",
@@ -382,13 +382,23 @@ export function fetchSummaryModels(): Promise<{ models: SummaryModelInfo[] }> {
   return getJson<{ models: SummaryModelInfo[] }>("/api/workbench/summary-models");
 }
 
-export async function startBatchSummary(batchId: string): Promise<{ ok: boolean; queued: boolean } | ApiError> {
+export async function startBatchSummary(batchId: string, force = false): Promise<{ ok: boolean; queued: boolean } | ApiError> {
   const res = await fetch("/api/workbench/summarize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ batch_id: batchId, force }),
+  });
+  return (await res.json()) as { ok: boolean; queued: boolean } | ApiError;
+}
+
+/** POST /api/queue/reexport-batch — force re-export of every durable result. */
+export async function reexportBatch(batchId: string): Promise<{ ok: boolean; done: number; failed: number; skipped: number } | ApiError> {
+  const res = await fetch("/api/queue/reexport-batch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ batch_id: batchId }),
   });
-  return (await res.json()) as { ok: boolean; queued: boolean } | ApiError;
+  return (await res.json()) as { ok: boolean; done: number; failed: number; skipped: number } | ApiError;
 }
 
 export async function retryItemSummary(historyId: string): Promise<{ ok: boolean; queued: boolean } | ApiError> {

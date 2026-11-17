@@ -20,7 +20,7 @@ def _setup(tmp_path, monkeypatch, *, llm=None, swap_in_error=False, swap_out_err
     wb.store.update_config({"summarize": True, "summary_model": "m"})
     qapi.store = QueueStore(tmp_path / "queue")
     history = HistoryStore(tmp_path / "history")
-    calls = {"swap_in": [], "swap_out": 0, "gate": []}
+    calls = {"swap_in": [], "swap_out": 0, "gate": [], "prompts": []}
     records = {}
     for hid, text in (("h1", "今天决定上线新导出流程。张三负责待办。"), ("h2", "第二段转写内容。")):
         rec = history.save(filename=f"{hid}.wav", text=text,
@@ -44,7 +44,8 @@ def _setup(tmp_path, monkeypatch, *, llm=None, swap_in_error=False, swap_out_err
         if swap_out_error:
             raise RuntimeError("restore failed")
 
-    async def fake_llm(text, title):
+    async def fake_llm(text, title, system_prompt=None):
+        calls["prompts"].append(system_prompt)
         if llm is not None:
             return llm(text, title)
         if "张三" in text:
@@ -107,6 +108,33 @@ def test_build_prompt_truncates():
     messages = sm.build_prompt("字" * (sm.MAX_TRANSCRIPT_CHARS + 500), "t")
     assert "节选" in messages[1]["content"]
     assert len(messages[1]["content"]) < sm.MAX_TRANSCRIPT_CHARS + 200
+
+
+def test_build_prompt_override_and_default():
+    assert sm.build_prompt("t", "x", "自定义指令")[0]["content"] == "自定义指令"
+    assert "JSON" in sm.build_prompt("t", "x")[0]["content"]
+
+
+def test_prompt_override_reaches_llm(tmp_path, monkeypatch):
+    calls, records, items, history = _setup(tmp_path, monkeypatch)
+    wb.store.update_config({"summary_prompt": "自定义指令"})
+    _drive()
+    assert calls["prompts"] == ["自定义指令", "自定义指令"]
+
+
+def test_force_resummarizes_done_items(tmp_path, monkeypatch):
+    calls, records, items, history = _setup(tmp_path, monkeypatch)
+    _drive()
+    assert calls["swap_out"] == 1
+
+    async def again():
+        ok, error = sm.start_batch("b1", force=True)
+        assert ok and error is None
+        if sm._task is not None:
+            await sm._task
+    asyncio.run(again())
+    assert sm.state()["total"] == 2
+    assert calls["swap_out"] == 2
 
 
 # phase machine

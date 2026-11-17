@@ -785,6 +785,7 @@ mark { color: inherit; background: var(--accent); }
 .asr-wb-row > span { display: grid; gap: 3px; align-content: start; min-width: 0; }
 .asr-wb-muted { color: var(--muted-2); }
 .asr-wb-clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.6; }
+.asr-wb-prompt { width: 100%; resize: vertical; font-family: inherit; line-height: 1.6; }
 @media (max-width: 900px) {
   .asr-wb-grid { grid-template-columns: 1fr; }
 }

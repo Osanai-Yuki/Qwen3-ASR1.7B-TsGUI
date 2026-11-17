@@ -28,6 +28,8 @@ router = APIRouter()
 _VALID_ID = re.compile(r"[0-9a-f]{12}")
 MAX_CONFIG_BYTES = 1024 * 1024
 SCAN_LIMIT_CAP = 5000
+NAME_PLACEHOLDERS = ("stem", "date", "time", "model", "batch", "id")
+DEFAULT_NAME_TEMPLATE = "{stem}"
 _ILLEGAL = re.compile(r'[<>:"/\\|?*]')
 _C0 = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -79,6 +81,8 @@ class WorkbenchStore:
             "auto_export": True,
             "summarize": False,
             "summary_model": None,
+            "export_name_template": DEFAULT_NAME_TEMPLATE,
+            "summary_prompt": None,
         }
         self._load()
 
@@ -103,6 +107,8 @@ class WorkbenchStore:
                 "auto_export": bool(data.get("auto_export", True)),
                 "summarize": bool(data.get("summarize", False)),
                 "summary_model": data.get("summary_model") if isinstance(data.get("summary_model"), str) else None,
+                "export_name_template": data.get("export_name_template") if isinstance(data.get("export_name_template"), str) and data.get("export_name_template") else DEFAULT_NAME_TEMPLATE,
+                "summary_prompt": data.get("summary_prompt") if isinstance(data.get("summary_prompt"), str) and data.get("summary_prompt").strip() else None,
             }
         except Exception as e:
             logger.warning("Workbench config unreadable (%s); starting empty", e)
@@ -231,8 +237,44 @@ class WorkbenchStore:
                 if value is not None and not isinstance(value, str):
                     return "invalid_summary_model"
                 self._state["summary_model"] = value
+            if "export_name_template" in patch:
+                value = patch["export_name_template"]
+                if not isinstance(value, str) or not value.strip() or len(value) > 120:
+                    return "invalid_name_template"
+                unknown = set(re.findall(r"\{([a-z_]*)\}", value)) - set(NAME_PLACEHOLDERS)
+                if unknown or "{stem}" not in value:
+                    return "invalid_name_template"
+                self._state["export_name_template"] = value.strip()
+            if "summary_prompt" in patch:
+                value = patch["summary_prompt"]
+                if value is not None and (not isinstance(value, str) or len(value) > 4000):
+                    return "invalid_summary_prompt"
+                self._state["summary_prompt"] = value.strip() if isinstance(value, str) and value.strip() else None
             self._save_locked()
         return None
+
+
+def render_export_name(
+    template: str,
+    *,
+    stem: str,
+    identity: str,
+    batch_name: str | None,
+    model: str | None,
+    now: datetime | None = None,
+) -> str:
+    """Expand naming placeholders, then sanitise to one safe component."""
+    now = now or datetime.now()
+    parts = {
+        "stem": stem,
+        "date": now.strftime("%Y%m%d"),
+        "time": now.strftime("%H%M"),
+        "model": model or "unknown",
+        "batch": batch_name or "workbench",
+        "id": re.sub(r"[^0-9a-zA-Z]", "", identity)[:8] or "00000000",
+    }
+    rendered = re.sub(r"\{([a-z_]*)\}", lambda m: str(parts.get(m.group(1), m.group(0))), template)
+    return safe_component(rendered, stem) or stem
 
 
 def write_exports(
@@ -245,6 +287,8 @@ def write_exports(
     export_root: str,
     batch_name: str | None,
     formats: list[str],
+    name_template: str = DEFAULT_NAME_TEMPLATE,
+    model: str | None = None,
 ) -> list[dict]:
     """Atomically write one file per format under <export_root>/<batch>/.
 
@@ -255,15 +299,17 @@ def write_exports(
     directory = Path(export_root) / batch_dir
     directory.mkdir(parents=True, exist_ok=True)
     stem = export_stem(filename)
+    base = render_export_name(name_template, stem=stem, identity=identity,
+                              batch_name=batch_name, model=model)
     tag_base = re.sub(r"[^0-9a-zA-Z]", "", identity)[:8] or "00000000"
     written: list[dict] = []
     for fmt in formats:
-        desired = directory / f"{stem}.{fmt}"
+        desired = directory / f"{base}.{fmt}"
         target = desired
         counter = 1
         while target.exists() or _case_insensitive_exists(directory, target.name):
             tag = f"__{tag_base}" if counter == 1 else f"__{tag_base}-{counter}"
-            target = directory / f"{stem}{tag}.{fmt}"
+            target = directory / f"{base}{tag}.{fmt}"
             counter += 1
         content = export_formats.build_subtitle(fmt, text, segments, stats)
         tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.tmp")
@@ -323,6 +369,8 @@ def auto_export(item: dict, resp: dict, history_id: str | None, *, force: bool =
             export_root=cfg["export_root"],
             batch_name=item.get("batch_name"),
             formats=cfg["formats"],
+            name_template=cfg.get("export_name_template") or DEFAULT_NAME_TEMPLATE,
+            model=(resp.get("stats") or {}).get("model"),
         )
     except Exception:
         logger.exception("Auto-export failed for queue item %s", item.get("id"))
